@@ -60,6 +60,120 @@ def _music_link_info(raw_url):
     except Exception:
         return None
     return None
+
+
+def _download_direct_audio(raw_url):
+    """Download an administrator-supplied, publicly reachable direct audio URL.
+
+    YouTube/Spotify URLs are intentionally handled by their official embeds and
+    never downloaded here. Restrict hosts/IPs and file size to reduce SSRF risk.
+    Returns (relative_media_url, suggested_title).
+    """
+    import ipaddress, socket, mimetypes
+    from urllib.parse import urlparse, urljoin, unquote
+    from email.message import Message
+
+    allowed_ext = {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".oga", ".opus", ".flac", ".webm", ".mp4"}
+    mime_ext = {
+        "audio/mpeg": ".mp3", "audio/mp3": ".mp3", "audio/mp4": ".m4a",
+        "audio/aac": ".aac", "audio/wav": ".wav", "audio/x-wav": ".wav",
+        "audio/ogg": ".ogg", "audio/flac": ".flac", "audio/x-flac": ".flac",
+        "audio/webm": ".webm", "video/mp4": ".mp4", "application/ogg": ".ogg",
+    }
+    max_bytes = 50 * 1024 * 1024
+
+    def public_url(value):
+        p = urlparse(value)
+        if p.scheme not in ("http", "https") or not p.hostname or p.username or p.password:
+            raise ValueError("Use a public HTTP/HTTPS direct audio URL.")
+        if p.port not in (None, 80, 443):
+            raise ValueError("Audio URL must use the standard HTTP/HTTPS port.")
+        host = p.hostname.lower().rstrip(".")
+        if host in ("localhost",) or host.endswith((".localhost", ".local", ".internal")):
+            raise ValueError("Private/local network URLs are not allowed.")
+        try:
+            ip = ipaddress.ip_address(host)
+            ips = [ip]
+        except ValueError:
+            try:
+                ips = [ipaddress.ip_address(x[4][0]) for x in socket.getaddrinfo(host, p.port or (443 if p.scheme == "https" else 80), type=socket.SOCK_STREAM)]
+            except Exception:
+                raise ValueError("Could not resolve the audio URL host.")
+        if not ips or any(not x.is_global for x in ips):
+            raise ValueError("Private or non-public network addresses are not allowed.")
+        return p
+
+    current = raw_url.strip()
+    response = None
+    try:
+        for hop in range(4):
+            p = public_url(current)
+            response = requests.get(current, stream=True, timeout=(8, 25), allow_redirects=False,
+                                    headers={"User-Agent": "ResellerMusicImporter/1.0", "Accept": "audio/*,application/octet-stream;q=0.8,*/*;q=0.1"}, verify=True)
+            if response.status_code in (301, 302, 303, 307, 308):
+                loc = response.headers.get("Location")
+                response.close(); response = None
+                if not loc or hop >= 3:
+                    raise ValueError("Audio URL redirected too many times or had no redirect target.")
+                current = urljoin(current, loc)
+                continue
+            if response.status_code < 200 or response.status_code >= 300:
+                raise ValueError("Audio host returned HTTP %s." % response.status_code)
+            break
+        else:
+            raise ValueError("Could not follow the audio URL redirect.")
+
+        content_type = (response.headers.get("Content-Type") or "").split(";", 1)[0].strip().lower()
+        p = urlparse(current)
+        url_name = unquote(os.path.basename(p.path.rstrip("/")))
+        ext = os.path.splitext(url_name)[1].lower()
+        if ext not in allowed_ext:
+            ext = mime_ext.get(content_type, "")
+        if content_type.startswith("text/") or content_type in ("text/html", "application/json", "application/xml"):
+            raise ValueError("This URL returned a web page, not an audio file. Use a direct audio-file URL.")
+        if not content_type.startswith("audio/") and content_type not in ("video/mp4", "application/ogg", "application/octet-stream", "binary/octet-stream"):
+            raise ValueError("The URL does not appear to be an audio file.")
+        if ext not in allowed_ext:
+            raise ValueError("Unsupported audio format. Use MP3, M4A, AAC, WAV, OGG, OPUS or FLAC.")
+        size_header = response.headers.get("Content-Length")
+        if size_header and size_header.isdigit() and int(size_header) > max_bytes:
+            raise ValueError("Audio file is larger than the 50 MB limit.")
+
+        cd_name = ""
+        cd = response.headers.get("Content-Disposition", "")
+        if cd:
+            msg = Message(); msg["content-disposition"] = cd
+            cd_name = msg.get_filename() or ""
+        suggested = os.path.splitext(os.path.basename(unquote(cd_name or url_name)))[0]
+        suggested = re.sub(r"[\x00-\x1f]+", " ", suggested).strip()[:180]
+        if not suggested:
+            suggested = "Imported Music"
+
+        name = secrets.token_hex(12) + ext
+        dest = os.path.join(MUSIC_DIR, name)
+        total = 0
+        try:
+            with open(dest, "wb") as out:
+                for chunk in response.iter_content(chunk_size=64 * 1024):
+                    if not chunk:
+                        continue
+                    total += len(chunk)
+                    if total > max_bytes:
+                        raise ValueError("Audio file is larger than the 50 MB limit.")
+                    out.write(chunk)
+            if total == 0:
+                raise ValueError("The audio URL returned an empty file.")
+        except Exception:
+            try: os.remove(dest)
+            except OSError: pass
+            raise
+        return "/media/" + name, suggested
+    except requests.RequestException as e:
+        raise ValueError("Could not download the audio file: %s" % str(e)[:140])
+    finally:
+        if response is not None:
+            response.close()
+
 # ---- TELEGRAM BOT (edit here, nothing else to configure) ----------------------------------------
 TG_BOT_TOKEN = ""   # NEVER write the bot token here (GitHub leak!). Set it in Admin > Telegram. Optional backup: Render env TG_BOT_TOKEN
 TG_ADMIN_ID = "6739795427"      # default admin Chat ID (not secret). Admin > Telegram can change it any time
@@ -3323,10 +3437,19 @@ def admin_music():
             if url:
                 link_info = _music_link_info(url)
                 if link_info:
+                    # YouTube and Spotify remain on their official embed players.
                     url = link_info["url"]
                     title = title or link_info.get("title") or ("YouTube song" if link_info["kind"] == "youtube" else "Spotify song")
-                q("INSERT INTO music(title,url) VALUES(?,?)", (title or url.split("/")[-1], url), commit=True)
-                flash("Song added", "ok")
+                    q("INSERT INTO music(title,url) VALUES(?,?)", (title, url), commit=True)
+                    flash("Song link added. It will play using the official provider player.", "ok")
+                else:
+                    # A direct audio file URL is downloaded into this website's server storage.
+                    try:
+                        local_url, detected_title = _download_direct_audio(url)
+                        q("INSERT INTO music(title,url) VALUES(?,?)", (title or detected_title, local_url), commit=True)
+                        flash("Audio downloaded to website storage and added to Music.", "ok")
+                    except ValueError as e:
+                        flash(str(e), "err")
             else:
                 flash("Upload a file or paste a direct audio URL", "err")
         return redirect("/admin/music")
