@@ -771,6 +771,13 @@ T["admin_music.html"] = T["admin_music.html"].replace(
  '</form>\n<p class=mu>Songs play', '</form><div id=mp style="display:none;margin-top:10px"><div style="height:10px;border-radius:8px;background:rgba(255,255,255,.1);overflow:hidden"><div id=mb style="height:100%;width:0;background:linear-gradient(90deg,var(--ac),var(--ac2))"></div></div><div class=mu id=mt style="margin-top:6px">Uploading...</div></div>\n<p class=mu>Songs play', 1)
 T["admin_music.html"] = T["admin_music.html"].replace("{% endblock %}", r"""<script>
 var mf=document.getElementById('mf');
+ var mu=document.getElementById('musicurl'), mt=document.getElementById('musictitle'), lookupTimer;
+ if(mu&&mt){mu.addEventListener('change',lookupMusic);mu.addEventListener('paste',function(){setTimeout(lookupMusic,250)});
+  function lookupMusic(){var v=mu.value.trim();if(!/^https?:\/\//i.test(v))return;
+   fetch('/admin/music/metadata',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'url='+encodeURIComponent(v)})
+    .then(function(r){return r.json()}).then(function(d){if(d.ok&&d.title&&!mt.value.trim())mt.value=d.title;}).catch(function(){});
+  }
+ }
 mf.addEventListener('submit',function(e){var f=mf.querySelector('input[type=file]');if(!f.files.length||!window.XMLHttpRequest||!window.FormData)return;
  e.preventDefault();var x=new XMLHttpRequest(),box=document.getElementById('mp'),bar=document.getElementById('mb'),tx=document.getElementById('mt');
  box.style.display='block';mf.querySelectorAll('button').forEach(function(b){b.disabled=true});

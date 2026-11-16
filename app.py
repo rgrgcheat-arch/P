@@ -17,6 +17,49 @@ ADMIN_USER = "ROHIT"  # fixed on purpose (env vars ignored) - change later
 ADMIN_PASS = "909090"
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET_MIN", "330")) * 60  # default IST
 MAX_MUSIC = 20
+
+# Supported music-link metadata. YouTube/Spotify pages are not direct audio files;
+# they are played through the providers' official embed players below.
+def _music_link_info(raw_url):
+    from urllib.parse import urlparse, quote
+    raw_url = (raw_url or "").strip()
+    try:
+        u = urlparse(raw_url)
+        host = (u.hostname or "").lower()
+        if host in ("youtu.be", "www.youtu.be", "youtube.com", "www.youtube.com", "m.youtube.com", "music.youtube.com"):
+            if host.endswith("youtu.be"):
+                video_id = u.path.strip("/").split("/")[0]
+            elif u.path == "/watch":
+                from urllib.parse import parse_qs
+                video_id = (parse_qs(u.query).get("v") or [""])[0]
+            else:
+                bits = [x for x in u.path.split("/") if x]
+                video_id = bits[1] if len(bits) > 1 and bits[0] in ("embed", "shorts", "live") else ""
+            if not re.match(r"^[A-Za-z0-9_-]{6,20}$", video_id or ""):
+                return None
+            canonical = "https://www.youtube.com/watch?v=" + video_id
+            title = ""
+            try:
+                rr = requests.get("https://www.youtube.com/oembed", params={"url": canonical, "format": "json"}, timeout=8)
+                if rr.ok: title = str(rr.json().get("title") or "")[:200]
+            except Exception: pass
+            return {"kind": "youtube", "title": title, "url": canonical, "embed_url": "https://www.youtube.com/embed/" + video_id}
+        if host in ("open.spotify.com", "www.open.spotify.com"):
+            if host not in ("open.spotify.com", "www.open.spotify.com"): return None
+            parts = [x for x in u.path.split("/") if x and x not in ("intl-en", "intl-de", "intl-es")]
+            if len(parts) >= 2 and parts[0] in ("track", "album", "playlist", "episode", "show"):
+                kind, item_id = parts[0], parts[1].split("?")[0]
+                if not re.match(r"^[A-Za-z0-9]{10,30}$", item_id): return None
+                canonical = "https://open.spotify.com/%s/%s" % (kind, item_id)
+                title = ""
+                try:
+                    rr = requests.get("https://open.spotify.com/oembed", params={"url": canonical}, timeout=8)
+                    if rr.ok: title = str(rr.json().get("title") or "")[:200]
+                except Exception: pass
+                return {"kind": "spotify", "title": title, "url": canonical, "embed_url": "https://open.spotify.com/embed/%s/%s" % (kind, item_id)}
+    except Exception:
+        return None
+    return None
 # ---- TELEGRAM BOT (edit here, nothing else to configure) ----------------------------------------
 TG_BOT_TOKEN = ""   # NEVER write the bot token here (GitHub leak!). Set it in Admin > Telegram. Optional backup: Render env TG_BOT_TOKEN
 TG_ADMIN_ID = "6739795427"      # default admin Chat ID (not secret). Admin > Telegram can change it any time
@@ -138,7 +181,7 @@ def init_db():
                                    ("checkout_url", "TEXT DEFAULT ''"), ("app_pay", "INTEGER NOT NULL DEFAULT 0"),
                                    ("purpose", "TEXT NOT NULL DEFAULT 'wallet'"), ("pay_amount", "REAL NOT NULL DEFAULT 0"))),
                        ("products", (("icon", "TEXT DEFAULT ''"), ("emoji_id", "TEXT DEFAULT ''"), ("icon_ver", "INTEGER NOT NULL DEFAULT 0"),
-                                    ("pos", "INTEGER NOT NULL DEFAULT 0"), ("src_name", "TEXT DEFAULT ''")))):
+                                    ("pos", "INTEGER NOT NULL DEFAULT 0"), ("src_name", "TEXT DEFAULT ''"), ("hidden", "INTEGER NOT NULL DEFAULT 0")))):
         have = [r[1] for r in c.execute("PRAGMA table_info(%s)" % tbl)]
         for col, ddl in cols_:
             if col not in have:
@@ -399,6 +442,11 @@ def vsh_markups():
             max(num(get_setting("vsh_markup_user", "%g" % mu), mu), 0.0))
 
 
+def api_enabled(source):
+    key = "api_%s_enabled" % ("vsh" if source == "vsh" else "tahir")
+    return get_setting(key, "1") != "0"
+
+
 def vsh_call(endpoint, params=None, method="GET", _retried=False):
     """Call the VIP SELLER HUB API. The JSON field 'success' is always checked (Cloudflare wraps origin errors as HTTP 200)."""
     tok = vsh_token()
@@ -473,25 +521,47 @@ def vsh_status():
 
 
 def _vsh_product_list(raw):
-    d = raw.get("data")
-    if isinstance(d, dict):
-        for k in ("products", "items", "list"):
-            if isinstance(d.get(k), list):
-                return d[k]
-    if isinstance(d, list):
-        return d
-    for k in ("products", "items", "list"):
-        if isinstance(raw.get(k), list):
-            return raw[k]
+    """Accept data.products/products and common API response wrappers."""
+    if isinstance(raw, list):
+        return raw
+    if not isinstance(raw, dict):
+        return []
+    for node in (raw.get("data"), raw.get("result"), raw.get("response"), raw):
+        if isinstance(node, list):
+            return node
+        if isinstance(node, dict):
+            for key in ("products", "items", "list", "catalog"):
+                value = node.get(key)
+                if isinstance(value, list):
+                    return value
+            for key in ("data", "result", "response"):
+                nested = node.get(key)
+                if isinstance(nested, dict):
+                    for list_key in ("products", "items", "list", "catalog"):
+                        value = nested.get(list_key)
+                        if isinstance(value, list):
+                            return value
+    return []
+
+
+def _vsh_variants(product):
+    for key in ("variants", "plans", "options", "durations", "items"):
+        value = product.get(key)
+        if isinstance(value, list) and value:
+            return value
+    if any(product.get(k) not in (None, "") for k in ("id", "variant_id", "plan_id")):
+        return [product]
     return []
 
 
 def vsh_load_catalog(refresh=False):
-    """All products of VIP SELLER HUB (GET products.php), product -> variants. Cost = API price x rate. Cached in settings."""
+    """Load every VIP Seller Hub product/variant; retain provider IDs verbatim."""
     if not refresh:
         try:
-            return json.loads(get_setting("vsh_catalog"))
-        except ValueError:
+            cached = json.loads(get_setting("vsh_catalog"))
+            if isinstance(cached, dict) and isinstance(cached.get("products"), list) and cached.get("products"):
+                return cached
+        except (ValueError, TypeError):
             pass
     raw = vsh_call("products.php")
     rate = vsh_rate()
@@ -499,28 +569,36 @@ def vsh_load_catalog(refresh=False):
     for n, p in enumerate(_vsh_product_list(raw), 1):
         if not isinstance(p, dict):
             continue
-        gname = str(p.get("name") or p.get("title") or p.get("product_name") or "Product %s" % (p.get("id") or n)).strip()
+        gname = str(p.get("name") or p.get("title") or p.get("product_name") or
+                    p.get("product") or "Product %s" % (p.get("id") or n)).strip()
         plans = []
-        variants = p.get("variants")
-        if not isinstance(variants, list) or not variants:
-            variants = [p] if p.get("id") is not None and _first_num(p, ("price", "cost")) is not None else []
-        for v in variants:
+        for v in _vsh_variants(p):
             if not isinstance(v, dict):
                 continue
-            try:
-                vid = int(v.get("id"))
-            except (TypeError, ValueError):
+            raw_id = v.get("variant_id", v.get("plan_id", v.get("id")))
+            if raw_id in (None, ""):
                 continue
-            price = _first_num(v, ("price", "cost", "rate", "amount", "price_inr", "reseller_price")) or 0.0
-            vname = str(v.get("name") or v.get("title") or v.get("duration") or v.get("label") or ("Variant %s" % vid)).strip()
-            bala = bool(v.get("is_balamod"))
-            stock = v.get("stock", v.get("available"))
-            avail = True if stock in (None, "") else (str(stock).lower() not in ("0", "false", "no", "out"))
-            plans.append(dict(plan_id=vid, name=vname, price=round(price * rate, 2), api_price=price, available=avail,
-                              balamod=bala, mode=(str(v.get("api_version_mode") or "") if bala else "")))
+            vid = str(raw_id).strip()
+            if not vid:
+                continue
+            price = _first_num(v, ("price", "cost", "rate", "amount", "price_inr",
+                                    "reseller_price", "selling_price", "base_price", "price_usd", "usd_price", "cost_usd"))
+            if price is None:
+                price = _first_num(p, ("price", "cost", "rate", "amount")) or 0.0
+            vname = str(v.get("name") or v.get("title") or v.get("duration") or
+                        v.get("label") or v.get("validity") or ("Variant %s" % vid)).strip()
+            bala = bool(v.get("is_balamod", v.get("balamod", False)))
+            mode = str(v.get("api_version_mode") or v.get("mode") or "") if bala else ""
+            stock = v.get("stock", v.get("available", v.get("in_stock")))
+            avail = True if stock in (None, "") else (str(stock).lower() not in ("0", "false", "no", "out", "unavailable"))
+            plans.append(dict(plan_id=vid, name=vname, price=round(price * rate, 2),
+                              api_price=price, available=avail, balamod=bala, mode=mode))
         if plans:
-            groups.append(dict(product_id=p.get("id") or n, name=gname, plans=plans))
-    obj = dict(ts=int(time.time()), products=groups)
+            groups.append(dict(product_id=str(p.get("product_id") or p.get("id") or n),
+                               name=gname, plans=plans))
+    obj = dict(ts=int(time.time()), products=groups, product_count=len(groups),
+               variant_count=sum(len(x["plans"]) for x in groups),
+               raw_preview=(json.dumps(raw, ensure_ascii=False)[:3500] if not groups else ""))
     set_setting("vsh_catalog", json.dumps(obj))
     return obj
 
@@ -555,6 +633,58 @@ def parse_days(text):
     return max(1, n)
 
 
+def _extract_vsh_key(payload):
+    """Extract a generated key from common VIP Seller Hub response envelopes."""
+    key_names = ("key", "license_key", "license", "generated_key", "access_key", "code")
+    def walk(node, depth=0):
+        if depth > 6:
+            return None
+        if isinstance(node, dict):
+            for k in key_names:
+                value = node.get(k)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            for k in ("keys", "data", "result", "order", "response", "items"):
+                if k in node:
+                    found = walk(node[k], depth + 1)
+                    if found:
+                        return found
+        elif isinstance(node, list):
+            for item in node:
+                found = walk(item, depth + 1)
+                if found:
+                    return found
+        elif isinstance(node, str) and node.strip():
+            return node.strip()
+        return None
+    return walk(payload)
+
+
+def vsh_generate_key(variant_id, idem, meta=""):
+    """Purchase exactly one VIP Seller Hub variant; never retry an ambiguous POST."""
+    try:
+        details = json.loads(meta) if meta else {}
+    except (ValueError, TypeError):
+        details = {}
+    mode = str(details.get("mode") or "").lower()
+    if mode == "v1":
+        raise ValueError("This VIP Seller Hub variant requires the buyer's Android ID; this checkout does not collect it yet.")
+    body = {"variant_id": str(variant_id), "quantity": 1}
+    if mode == "both":
+        body["api_version"] = "v2"
+    try:
+        raw = vsh_call("generate_key.php", body, "POST")
+    except ProvUnknown:
+        raise
+    except requests.Timeout:
+        raise ProvUnknown("VIP Seller Hub timed out after the purchase request; contact admin before retrying.")
+    key = _extract_vsh_key(raw)
+    if not key:
+        raise ValueError("VIP Seller Hub did not return a key. Raw response: %s" %
+                         json.dumps(raw, ensure_ascii=False)[:180])
+    return key
+
+
 def next_prod_pos():
     r = q("SELECT MAX(MAX(pos), MAX(id)) FROM products", one=True)
     return int(r[0] or 0) + 1
@@ -568,15 +698,17 @@ def renumber_products(ids):
 def catalog(rid):
     out = []
     user = role_of(rid) == "user"
-    for p in q("SELECT * FROM products ORDER BY (CASE WHEN pos>0 THEN pos ELSE id END), id"):
+    for p in q("SELECT * FROM products WHERE COALESCE(hidden,0)=0 ORDER BY (CASE WHEN pos>0 THEN pos ELSE id END), id"):
         plans = []
         for pl in q("SELECT * FROM plans WHERE product_id=? ORDER BY (CASE WHEN hours>0 THEN hours*3600 ELSE days*86400 END), id", (p["id"],)):
-            if pl["mode"] == "provider" and pl["prov_src"] != "tahir":      # linked to the REMOVED old API -> never sold
+            src = (pl["prov_src"] or "").lower()
+            if pl["mode"] == "provider" and (src not in ("tahir", "vsh") or not api_enabled(src)):
                 continue
             price, custom = (user_price_of(pl), False) if user else price_for(rid, pl)
             sc = q("SELECT COUNT(*) FROM stock WHERE plan_id=? AND used=0", (pl["id"],), one=True)[0]
             plans.append(dict(id=pl["id"], name=pl["name"], days=pl["days"], hours=pl["hours"] or 0, price=price, custom=custom,
-                              mode=pl["mode"] or "random", stock=sc))
+                              mode=pl["mode"] or "random", stock=sc,
+                              provider=("VIP Seller Hub" if src == "vsh" else ("Tahir API" if src == "tahir" else ""))))
         icon = ("/picon/%d?v=%d" % (p["id"], p["icon_ver"] or 0)) if p["icon"] else ("/emoji/" + p["emoji_id"] if p["emoji_id"] else "")
         out.append(dict(id=p["id"], name=p["name"], plans=plans, icon=icon))
     return out
@@ -638,8 +770,13 @@ def buy(rid, plan_id, via="panel"):
             raise ValueError("Insufficient balance")
         now = int(time.time())
         mode, key = (pl["mode"] or "random"), None
-        if mode == "provider" and (not pl["prov_pid"] or pl["prov_src"] != "tahir"):
-            raise ValueError("Plan is not linked to the Tahir API (admin must import it again)")
+        provider_src = (pl["prov_src"] or "").lower()
+        if mode == "provider":
+            if not pl["prov_pid"] or provider_src not in ("tahir", "vsh"):
+                raise ValueError("This plan is not linked to a supported API. Re-import it from the provider.")
+            if not api_enabled(provider_src):
+                raise ValueError("%s API is currently OFF. Please choose another provider plan." %
+                                 ("VIP Seller Hub" if provider_src == "vsh" else "Tahir"))
         if mode == "stock":
             row = c.execute("SELECT * FROM stock WHERE plan_id=? AND used=0 ORDER BY id LIMIT 1", (plan_id,)).fetchone()
             if not row:
@@ -666,7 +803,11 @@ def buy(rid, plan_id, via="panel"):
     if mode in ("api", "provider"):  # balance already reserved; refund if the provider fails
         try:
             if mode == "provider":
-                key = prov_generate(pl["prov_pid"], "rs-%s-%s-%s-%s" % (rid, plan_id, now, secrets.token_hex(4)))
+                idem = "rs-%s-%s-%s-%s" % (rid, plan_id, now, secrets.token_hex(4))
+                if provider_src == "vsh":
+                    key = vsh_generate_key(pl["prov_pid"], idem, pl["prov_meta"] or "")
+                else:
+                    key = prov_generate(pl["prov_pid"], idem)
             else:
                 key = fetch_external(pl)
         except ProvUnknown as e:      # request may have gone through -> do NOT refund automatically
@@ -2484,8 +2625,8 @@ def admin_products():
             plid = int(request.form["plan_id"])
             old = q("SELECT days,hours,name,prov_pid,prov_src FROM plans WHERE id=?", (plid,), one=True)
             mode = request.form.get("mode", "stock")
-            if old and mode == "provider" and (not old["prov_pid"] or old["prov_src"] != "tahir"):
-                flash("This plan is not linked to the Tahir API (import it again from Tahir API System > All Products)", "err")
+            if old and mode == "provider" and (not old["prov_pid"] or old["prov_src"] not in ("tahir", "vsh")):
+                flash("This plan is not linked to Tahir or VIP Seller Hub. Import it from the correct API first.", "err")
             elif old:
                 same = old["days"] == days and (old["hours"] or 0) == hours
                 name = old["name"] if same else plan_label(days, hours)
@@ -2519,6 +2660,10 @@ def admin_products():
                     except Exception:
                         flash("That file is not a picture", "err")
                 flash("Product icon saved", "ok")
+        elif a == "toggle_hidden":
+            pid = int(num(request.form.get("product_id")))
+            q("UPDATE products SET hidden=CASE WHEN COALESCE(hidden,0)=0 THEN 1 ELSE 0 END WHERE id=?", (pid,), commit=True)
+            flash("Product visibility updated", "ok")
         elif a == "del_product":
             q("DELETE FROM products WHERE id=?", (int(request.form["product_id"]),), commit=True)
         return redirect("/admin/products")
@@ -3090,6 +3235,15 @@ def admin_broadcast():
                            page="broadcast")
 
 
+@app.route("/admin/music/metadata", methods=["POST"])
+@admin_required
+def admin_music_metadata():
+    info = _music_link_info(request.form.get("url", ""))
+    if not info:
+        return jsonify({"ok": False, "error": "Paste a valid YouTube or Spotify link."}), 400
+    return jsonify({"ok": True, "title": info.get("title") or "", "kind": info["kind"], "url": info["url"]})
+
+
 @app.route("/admin/music", methods=["GET", "POST"])
 @admin_required
 def admin_music():
@@ -3123,6 +3277,10 @@ def admin_music():
                 url = "/media/" + name
                 title = title or os.path.splitext(f.filename)[0]
             if url:
+                link_info = _music_link_info(url)
+                if link_info:
+                    url = link_info["url"]
+                    title = title or link_info.get("title") or ("YouTube song" if link_info["kind"] == "youtube" else "Spotify song")
                 q("INSERT INTO music(title,url) VALUES(?,?)", (title or url.split("/")[-1], url), commit=True)
                 flash("Song added", "ok")
             else:
@@ -3136,6 +3294,10 @@ def admin_music():
 @admin_required
 def admin_main_api():
     if request.method == "POST":
+        if request.form.get("action") == "toggle":
+            set_setting("api_tahir_enabled", "0" if api_enabled("tahir") else "1")
+            flash("Tahir API is now %s." % ("ON" if api_enabled("tahir") else "OFF"), "ok")
+            return redirect("/admin/main-api")
         if request.form.get("action") == "save":
             tok = request.form.get("token", "").strip()
             if tok and tok != prov_token():
@@ -3152,7 +3314,7 @@ def admin_main_api():
     except ValueError:
         st = None
     tok = prov_token()
-    return render_template("admin_mapi.html", tail=tok[-4:] if tok else "", st=st, page="mapi")
+    return render_template("admin_mapi.html", tail=tok[-4:] if tok else "", st=st, enabled=api_enabled("tahir"), page="mapi")
 
 
 @app.route("/admin/main-api/products", methods=["GET", "POST"])
@@ -3188,7 +3350,7 @@ def admin_main_api_products():
         if scope == "all":
             ids = list(rows)
         else:
-            ids = [int(x) for x in request.form.getlist("pid") if x.isdigit() and int(x) in rows]
+            ids = [str(x) for x in request.form.getlist("pid") if str(x) in rows]
         if not ids:
             flash("Nothing selected. Tick the products / plans you want to add.", "err")
             return redirect("/admin/main-api/products")
@@ -3259,6 +3421,10 @@ def admin_main_api_products():
 def admin_vsh():
     if request.method == "POST":
         act = request.form.get("action")
+        if act == "toggle":
+            set_setting("api_vsh_enabled", "0" if api_enabled("vsh") else "1")
+            flash("VIP Seller Hub API is now %s." % ("ON" if api_enabled("vsh") else "OFF"), "ok")
+            return redirect("/admin/vsh")
         if act == "save":
             base = request.form.get("base", "").strip()
             if base:
@@ -3288,7 +3454,7 @@ def admin_vsh():
     except ValueError:
         st = None
     tok = vsh_token()
-    return render_template("admin_vsh.html", tail=tok[-4:] if tok else "", st=st, base=vsh_base(), rate=vsh_rate(), page="vsh")
+    return render_template("admin_vsh.html", tail=tok[-4:] if tok else "", st=st, base=vsh_base(), rate=vsh_rate(), enabled=api_enabled("vsh"), page="vsh")
 
 
 @app.route("/admin/vsh/products", methods=["GET", "POST"])
@@ -3309,14 +3475,14 @@ def admin_vsh_products():
         rows = {}
         for p in cat.get("products", []):
             for pl in p.get("plans") or []:
-                rows[int(pl["plan_id"])] = (p, pl)
+                rows[str(pl["plan_id"])] = (p, pl)
 
         def prices(cost):
             return round(cost * (1 + mr / 100.0), 2), round(cost * (1 + mu / 100.0), 2)
         if scope == "sync":                      # re-price every plan already imported, using fresh costs
             n = 0
             for pl in q("SELECT id, prov_pid FROM plans WHERE prov_src='vsh'"):
-                hit = rows.get(pl["prov_pid"])
+                hit = rows.get(str(pl["prov_pid"]))
                 if hit:
                     cost = float(hit[1].get("price") or 0)
                     rp, up = prices(cost)
@@ -3327,7 +3493,7 @@ def admin_vsh_products():
         if scope == "all":
             ids = list(rows)
         else:
-            ids = [int(x) for x in request.form.getlist("pid") if x.isdigit() and int(x) in rows]
+            ids = [str(x) for x in request.form.getlist("pid") if str(x) in rows]
         if not ids:
             flash("Nothing selected. Tick the products / plans you want to add.", "err")
             return redirect("/admin/vsh/products")
@@ -3338,7 +3504,7 @@ def admin_vsh_products():
             cost = float(pl.get("price") or 0)
             rp, up = prices(cost)
             meta = json.dumps(dict(balamod=bool(pl.get("balamod")), mode=pl.get("mode") or ""))
-            ex = q("SELECT id FROM plans WHERE prov_pid=? AND prov_src='vsh'", (pid,), one=True)
+            ex = q("SELECT id FROM plans WHERE prov_pid=? AND prov_src='vsh'", (str(pid),), one=True)
             if ex:
                 if overwrite:
                     q("UPDATE plans SET cost=?, price=?, user_price=?, prov_meta=? WHERE id=?", (cost, rp, up, meta, ex["id"]), commit=True)
@@ -3348,12 +3514,13 @@ def admin_vsh_products():
                     skip += 1
                 continue
             pname = (p.get("name") or "Product").strip()
-            skey = "vsh|" + pname                       # VIP Seller Hub products stay separate from other APIs' products
-            pr = q("SELECT id FROM products WHERE lower(src_name)=lower(?) ORDER BY id", (skey,), one=True)
+            # Merge identical product names from Tahir and VIP Seller Hub into one panel product.
+            pr = q("SELECT id FROM products WHERE lower(name)=lower(?) OR lower(src_name)=lower(?) ORDER BY id",
+                   (pname, pname), one=True)
             if pr:
                 prid = pr["id"]
             else:
-                prid = q("INSERT INTO products(name,src_name,pos) VALUES(?,?,?)", (pname, skey, next_prod_pos()), commit=True)
+                prid = q("INSERT INTO products(name,src_name,pos) VALUES(?,?,?)", (pname, pname, next_prod_pos()), commit=True)
                 new_pr += 1
             hours = parse_hours(pl.get("name"))
             days = parse_days(pl.get("name"))
@@ -3377,14 +3544,14 @@ def admin_vsh_products():
             cat = None
     if err:
         flash("Could not load products: %s" % err, "err")
-    mine = {r["prov_pid"]: r for r in q("SELECT prov_pid, price, user_price FROM plans WHERE prov_src='vsh'")}
+    mine = {str(r["prov_pid"]): r for r in q("SELECT prov_pid, price, user_price FROM plans WHERE prov_src='vsh'")}
     groups = []
     for p in (cat or {}).get("products", []):
         plans = []
         for pl in p.get("plans") or []:
-            plans.append(dict(pid=int(pl["plan_id"]), name=pl.get("name") or "", cost=float(pl.get("price") or 0),
+            plans.append(dict(pid=str(pl["plan_id"]), name=pl.get("name") or "", cost=float(pl.get("price") or 0),
                               avail=pl.get("available", True), bala=pl.get("balamod"), mode=pl.get("mode") or "",
-                              mine=mine.get(int(pl["plan_id"]))))
+                              mine=mine.get(str(pl["plan_id"]))))
         groups.append(dict(id=p.get("product_id"), name=(p.get("name") or "Product").strip(), plans=plans))
     return render_template("admin_vsh_products.html", groups=groups, cat=cat, mr=mr0, mu=mu0, page="vsh")
 

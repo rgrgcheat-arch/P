@@ -95,6 +95,7 @@ T["admin_mapi.html"] = """{% extends 'abase.html' %}{% block c %}{% set page2='c
 <a class=btn href="/admin/main-api" style="{{'' if page2=='c' else 'background:transparent;border:1px solid var(--bd);box-shadow:none'}}">{{ic('key',16)}}Connection</a>
 <a class=btn href="/admin/main-api/products" style="{{'' if page2=='p' else 'background:transparent;border:1px solid var(--bd);box-shadow:none'}}">{{ic('box',16)}}All Products</a></div>
 <div class=card><h3>{{ic('key',20)}} Connect</h3>
+<form method=post style="margin-bottom:12px"><input type=hidden name=action value=toggle><button class="{{'g' if enabled else 'r'}}">{{'Turn Tahir API OFF' if enabled else 'Turn Tahir API ON'}}</button> <span class="pill {{'a' if enabled else 'e'}}">{{'ON' if enabled else 'OFF'}}</span></form>
 <p class=mu>Just paste your API token and press <b>Connect</b>. Nothing else is needed.</p>
 <form method=post><input type=hidden name=action value=save>
 <p class=mu>API Token{% if tail %} &mdash; saved (ends with <code>{{tail}}</code>). Leave empty to keep it.{% endif %}</p>

@@ -174,7 +174,7 @@ T["rbase.html"] = HEAD + """Reseller Panel</title><style>""" + CSS + """</style>
 <a href="/api-docs" class="{{'on' if page=='api'}}">{{ic('code')}} API &amp; Docs</a>
 <a href="/logout">{{ic('logout')}} Logout</a></div>
 <div class="top"><button class="iconbtn" id=bg aria-label="Menu">{{ic('menu',22)}}</button>
-<div class="player" id=pl><button id=pv aria-label="Previous">{{ic('prev',16)}}</button><button id=pp aria-label="Play">{{ic('play',16)}}</button><button id=nx aria-label="Next">{{ic('next',16)}}</button><span id=ttl>…</span><audio id=au preload=auto></audio></div></div>
+<div class="player" id=pl><button id=pv aria-label="Previous">{{ic('prev',16)}}</button><button id=pp aria-label="Play">{{ic('play',16)}}</button><button id=nx aria-label="Next">{{ic('next',16)}}</button><span id=ttl>…</span><audio id=au preload=auto></audio><iframe id=musicframe title="Music player" allow="autoplay; encrypted-media; picture-in-picture" style="display:none;border:0;border-radius:10px;width:220px;height:80px" loading="lazy"></iframe></div></div>
 <div class="wrap">""" + FLASH + """{% block c %}{% endblock %}</div>
 <script>
 const PLAY='{{ic('play',16)|e}}',PAUSE='{{ic('pause',16)|e}}';
@@ -184,16 +184,23 @@ document.querySelectorAll('[data-copy]').forEach(b=>b.onclick=()=>{navigator.cli
 (async()=>{let L=[];try{L=await(await fetch('/music.json')).json()}catch(e){}
 if(!L.length){pl.style.display='none';return}
 let i=+localStorage.mi||0;if(i>=L.length)i=0;
-function load(n,seek){i=(n+L.length)%L.length;au.src=L[i].url;ttl.textContent=L[i].title;localStorage.mi=i;
- if(seek)au.addEventListener('loadedmetadata',()=>{au.currentTime=seek},{once:true})}
+const frame=document.getElementById('musicframe');
+function provider(url){try{let u=new URL(url),h=u.hostname.toLowerCase(),id='';
+ if(h==='youtu.be'||h.endsWith('youtube.com')){if(h==='youtu.be')id=u.pathname.split('/').filter(Boolean)[0]||'';else if(u.pathname==='/watch')id=u.searchParams.get('v')||'';else{let a=u.pathname.split('/').filter(Boolean);id=(a[0]==='embed'||a[0]==='shorts'||a[0]==='live')?(a[1]||''):''}if(id)return {kind:'youtube',src:'https://www.youtube.com/embed/'+encodeURIComponent(id)+'?autoplay=1&playsinline=1'};}
+ if(h==='open.spotify.com'){let a=u.pathname.split('/').filter(Boolean).filter(x=>!x.startsWith('intl-'));if(a.length>=2&&['track','album','playlist','episode','show'].includes(a[0]))return {kind:'spotify',src:'https://open.spotify.com/embed/'+a[0]+'/'+a[1]+'?utm_source=generator'};}
+ }catch(e){}return null}
+function load(n,seek){i=(n+L.length)%L.length;let item=L[i],p=provider(item.url);ttl.textContent=item.title||'Music';localStorage.mi=i;
+ if(p){au.pause();au.removeAttribute('src');au.style.display='none';frame.style.display='block';frame.src=p.src;pp.style.display='none';}
+ else{frame.src='';frame.style.display='none';au.style.display='';pp.style.display='';au.src=item.url;if(seek)au.addEventListener('loadedmetadata',()=>{au.currentTime=seek},{once:true});}
+}
 function play(){au.play().then(()=>{pp.innerHTML=PAUSE;localStorage.mp=1}).catch(()=>{pp.innerHTML=PLAY})}
 function pause(){au.pause();pp.innerHTML=PLAY;localStorage.mp=0}
 load(i,+localStorage.mt||0);
 pp.onclick=()=>au.paused?play():pause();
-nx.onclick=()=>{load(i+1);play()};pv.onclick=()=>{load(i-1);play()};
-au.onended=()=>{load(i+1);play()};
+nx.onclick=()=>{load(i+1);if(!provider(L[i].url))play()};pv.onclick=()=>{load(i-1);if(!provider(L[i].url))play()};
+au.onended=()=>{load(i+1);if(!provider(L[i].url))play()};
 setInterval(()=>{if(!au.paused)localStorage.mt=au.currentTime},1000);
-if(localStorage.mp!=='0'){play();document.addEventListener('click',()=>{if(au.paused&&localStorage.mp!=='0')play()},{once:true})}
+if(localStorage.mp!=='0'&&!provider(L[i].url)){play();document.addEventListener('click',()=>{if(au.paused&&localStorage.mp!=='0')play()},{once:true})}
 })();
 </script></body></html>"""
 
@@ -217,7 +224,7 @@ T["dashboard.html"] = """{% extends 'rbase.html' %}{% block c %}
 
 T["generate.html"] = """{% extends 'rbase.html' %}{% block c %}<h2>{{ic('key',24)}} Generate Key</h2><div class=mu>Balance: <b style="color:#34d399">{{r.balance|cur}}</b></div>
 {% for p in cat %}<div class=card><h3>{{p.name}}</h3>{% if not p.plans %}<div class=mu>No plans yet</div>{% endif %}
-<div class=tw><table>{% for pl in p.plans %}{% set out = pl.mode=='stock' and pl.stock==0 %}<tr><td>{{pl.name}}<div class=mu>{% if pl.hours %}{{pl.hours}} hour(s){% else %}{{pl.days}} day(s){% endif %}{% if pl.mode=='stock' %} · {{pl.stock}} in stock{% endif %}</div></td>
+<div class=tw><table>{% for pl in p.plans %}{% set out = pl.mode=='stock' and pl.stock==0 %}<tr><td>{{pl.name}}<div class=mu>{% if pl.hours %}{{pl.hours}} hour(s){% else %}{{pl.days}} day(s){% endif %}{% if pl.mode=='stock' %} · {{pl.stock}} in stock{% endif %}{% if pl.provider %} · <b>{{pl.provider}}</b>{% endif %}</div></td>
 <td><b style="color:#34d399">{{pl.price|cur}}</b>{% if pl.custom %} <span class="pill p">special</span>{% endif %}</td>
 <td style="text-align:right"><form method=post onsubmit="return confirm('Purchase {{pl.name}} for {{pl.price|cur}}?')">
 <input type=hidden name=plan_id value="{{pl.id}}"><button class=g {{'disabled' if out}}>{{'Out of stock' if out else 'Purchase Now'}}</button></form></td></tr>{% endfor %}</table></div></div>
@@ -279,7 +286,7 @@ T["admin_products.html"] = """{% extends 'abase.html' %}{% block c %}<h2>Product
 {% for e in x.plans %}{% set pl=e.pl %}<tr><form method=post><input type=hidden name=action value=edit_plan><input type=hidden name=plan_id value="{{pl.id}}">
 <td>{{pl.id}}</td><td style="white-space:nowrap"><input name=days type=number min=1 value="{{pl.hours if pl.hours else pl.days}}" style="width:65px"> <select name=unit style="width:88px"><option value=days {{'' if pl.hours else 'selected'}}>Days</option><option value=hours {{'selected' if pl.hours}}>Hours</option></select></td>
 <td><input name=price type=number step=any value="{{pl.price}}" style="width:90px"></td>
-<td><select name=mode>{% for v,l in [('stock','Manual keys'),('api','External API'),('random','Auto-generate')] %}<option value="{{v}}" {{'selected' if (pl.mode or 'random')==v}}>{{l}}</option>{% endfor %}{% if pl.prov_pid %}<option value="provider" {{'selected' if pl.mode=='provider'}}>Main API #{{pl.prov_pid}}</option>{% endif %}</select></td>
+<td><select name=mode>{% for v,l in [('stock','Manual keys'),('api','External API'),('random','Auto-generate')] %}<option value="{{v}}" {{'selected' if (pl.mode or 'random')==v}}>{{l}}</option>{% endfor %}{% if pl.prov_pid %}<option value="provider" {{'selected' if pl.mode=='provider'}}>{{'VIP Seller Hub' if pl.prov_src=='vsh' else 'Tahir API'}} #{{pl.prov_pid}}</option>{% endif %}</select></td>
 <td style="white-space:nowrap"><button class=g>Save</button></form>
 {% if (pl.mode or 'random')=='stock' %}<a class=btn href="/admin/stock/{{pl.id}}" style="padding:8px 12px">{{ic('key',16)}}Keys <span class="pill c">{{e.stock}}</span></a>{% elif pl.mode=='api' %}<a class=btn href="/admin/plan-api/{{pl.id}}" style="padding:8px 12px">{{ic('code',16)}}API</a>{% elif pl.mode=='provider' %}<span class="pill c">Main API #{{pl.prov_pid}}</span>{% endif %}
 <form method=post style="display:inline" onsubmit="return confirm('Delete plan?')"><input type=hidden name=action value=del_plan><input type=hidden name=plan_id value="{{pl.id}}"><button class=r>{{ic('x',16)}}</button></form></td></tr>
@@ -331,9 +338,9 @@ T["admin_reseller.html"] = """{% extends 'abase.html' %}{% block c %}<a href="/a
 <form method=post style="display:inline" onsubmit="return confirm('Delete reseller and history?')"><input type=hidden name=action value=delete><button class=r>Delete Reseller</button></form></div>{% endblock %}"""
 
 T["admin_music.html"] = """{% extends 'abase.html' %}{% block c %}<h2>{{ic('music',24)}} Music ({{rows|length}}/{{mx}})</h2>
-<div class=card><form method=post enctype=multipart/form-data class=row><input name=title placeholder="Title (optional)"><input type=file name=file accept="audio/*">
-<span class=mu>or</span><input name=url placeholder="Direct audio URL (.mp3)"><button>Add Song</button></form>
-<p class=mu>Songs play in order at the top of the reseller panel. Free Render disk resets on redeploy, so direct URLs are safer than uploads.</p></div>
+<div class=card><form method=post enctype=multipart/form-data class=row><input name=title id=musictitle placeholder="Song title (auto-detected if blank)"><input type=file name=file accept="audio/*">
+<span class=mu>or</span><input name=url id=musicurl placeholder="Direct audio URL, YouTube or Spotify link"><button>Add Song</button></form>
+<p class=mu>Paste a YouTube or Spotify link: the song title is detected automatically and it plays in the panel using the official embedded player. Direct MP3/audio URLs and uploads are still supported. External embeds may require the user to press Play because of browser/platform autoplay rules.</p></div>
 <div class="card tw"><table>{% for m in rows %}<tr><td>{{loop.index}}</td><td>{{m.title}}</td><td><audio controls preload=none src="{{m.url}}" style="height:32px"></audio></td>
 <td><form method=post><input type=hidden name=action value=delete><input type=hidden name=id value="{{m.id}}"><button class=r>Delete</button></form></td></tr>
 {% else %}<tr><td>No songs</td></tr>{% endfor %}</table></div>{% endblock %}"""

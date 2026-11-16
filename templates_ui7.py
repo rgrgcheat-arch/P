@@ -13,6 +13,7 @@ VTABS = """<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px">
 
 T["admin_vsh.html"] = """{% extends 'abase.html' %}{% block c %}{% set page2='c' %}<h2>{{ic('code',24)}} VIP Seller Hub API</h2>""" + VTABS + """
 <div class=card><h3>{{ic('key',20)}} Connect</h3>
+<form method=post style="margin-bottom:12px"><input type=hidden name=action value=toggle><button class="{{'g' if enabled else 'r'}}">{{'Turn VIP Seller Hub OFF' if enabled else 'Turn VIP Seller Hub ON'}}</button> <span class="pill {{'a' if enabled else 'e'}}">{{'ON' if enabled else 'OFF'}}</span></form>
 <p class=mu>Paste your API token and press <b>Connect</b>. The Base URL is already filled in; change it only if your API link changes.</p>
 <form method=post><input type=hidden name=action value=save>
 <p class=mu>Base URL</p>
@@ -48,13 +49,14 @@ T["admin_vsh_products.html"] = """{% extends 'abase.html' %}{% block c %}{% set 
 <button type=submit name=scope value=sync class=o onclick="return confirm('Re-price every imported plan with fresh costs and these percentages?')">Sync prices</button>
 <a class=btn href="/admin/vsh/products?refresh=1" style="background:transparent;border:1px solid var(--bd);box-shadow:none">Refresh</a>
 <label class=mu style="margin-left:auto;display:flex;align-items:center;gap:6px"><input type=checkbox id=selall style="width:auto"> Select all</label></div>
-<div class=mu style="margin-top:8px">List fetched: {{cat.ts|dt}} &middot; Edit single prices later in <a href="/admin/products">Products</a>.</div></div>
+<div class=mu style="margin-top:8px">Fetched {{cat.product_count or groups|length}} products / {{cat.variant_count or 0}} variants. List fetched: {{cat.ts|dt}} &middot; Edit single prices later in <a href="/admin/products">Products</a>.</div></div>
 {% for g in groups %}<div class=card><div style="display:flex;justify-content:space-between;align-items:center"><h3>{{g.name}}</h3><label class=mu style="display:flex;align-items:center;gap:6px"><input type=checkbox class=ga style="width:auto"> all</label></div>
 <div class=tw><table><tr><th></th><th>Plan</th><th>ID</th><th>Cost</th><th>Reseller</th><th>User</th><th>Status</th></tr>
 {% for p in g.plans %}<tr><td><input type=checkbox name=pid value="{{p.pid}}" class=pc style="width:auto"></td><td>{{p.name}}{% if p.bala %} <span class="pill p">Bala Mod{% if p.mode %} {{p.mode}}{% endif %}</span>{% endif %}</td><td>{{p.pid}}</td>
 <td>{{p.cost|cur}}</td><td class=rp data-c="{{p.cost}}">-</td><td class=up data-c="{{p.cost}}">-</td>
 <td>{% if p.mine %}<span class="pill a">Imported</span> <span class=mu>R {{p.mine.price|cur}} / U {{p.mine.user_price|cur}}</span>{% else %}<span class="pill p">New</span>{% endif %}{% if not p.avail %} <span class="pill e">Out</span>{% endif %}</td></tr>{% else %}<tr><td colspan=7 class=mu>No plans</td></tr>{% endfor %}</table></div></div>
-{% else %}<div class=card>The product list is empty. Press Refresh, or check the raw answer on the Connection tab.</div>{% endfor %}
+{% else %}<div class=card>The product list is empty. Press Refresh, or check the raw answer on the Connection tab.
+{% if cat.raw_preview %}<details style="margin-top:10px"><summary class=mu style="cursor:pointer">Raw products.php response (diagnostic)</summary><pre style="white-space:pre-wrap;word-break:break-all;font-size:12px">{{cat.raw_preview}}</pre></details>{% endif %}</div>{% endfor %}
 </form>
 <script>
 const f2=v=>{v=Math.round(v*100)/100;return '{{CURRENCY}}'+v},mkr=document.getElementById('mkr'),mku=document.getElementById('mku');
@@ -64,5 +66,26 @@ document.querySelectorAll('.ga').forEach(g=>g.onchange=()=>g.closest('.card').qu
 document.getElementById('selall').onchange=function(){document.querySelectorAll('.pc,.ga').forEach(c=>c.checked=this.checked)};
 </script>
 {% endif %}{% endblock %}"""
+
+
+
+# v16 follow-up: visibility controls and provider-aware plan labels.
+T["admin_products.html"] = T["admin_products.html"].replace(
+    '{{x.p.name}}</h3>',
+    '{{x.p.name}} {% if x.p.hidden %}<span class="pill e">Hidden</span>{% endif %}</h3>', 1)
+T["admin_products.html"] = T["admin_products.html"].replace(
+    '<form method=post onsubmit=',
+    '<form method=post style="display:inline"><input type=hidden name=action value=toggle_hidden><input type=hidden name=product_id value="{{x.p.id}}"><button class=o>{{\'Unhide\' if x.p.hidden else \'Hide\'}}</button></form><form method=post onsubmit=', 1)
+T["admin_products.html"] = T["admin_products.html"].replace(
+    '<span class="pill c">Main API #{{pl.prov_pid}}</span>',
+    '<span class="pill c">{{\'VIP Seller Hub\' if pl.prov_src==\'vsh\' else \'Tahir API\'}} #{{pl.prov_pid}}</span>', 1)
+
+T["admin_products.html"] = T["admin_products.html"].replace(
+    """{% if pl.prov_src=='v2' %}<span class="pill c">Tahir API System #{{pl.prov_pid}}</span>{% else %}<span class="pill e">Old API - delete</span>{% endif %}""",
+    """<span class="pill c">{{'VIP Seller Hub' if pl.prov_src=='vsh' else 'Tahir API'}} #{{pl.prov_pid}}</span>""", 1)
+
+T["generate.html"] = T["generate.html"].replace(
+    "x.name.toUpperCase()+' - '+CU+x.price",
+    "x.name.toUpperCase()+' - '+(x.provider?x.provider+' · ':'')+CU+x.price", 1)
 
 TEMPLATES = T
