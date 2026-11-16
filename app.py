@@ -403,7 +403,9 @@ def load_catalog(refresh=False):
         if gname not in groups:
             groups[gname] = dict(product_id=len(order) + 1, name=gname, plans=[])
             order.append(gname)
-        groups[gname]["plans"].append(dict(plan_id=pid, name=str(it.get("duration") or "").strip(), price=cost, available=True))
+        raw_duration = str(it.get("duration") or it.get("validity") or it.get("name") or "").strip()
+        days, hours, display_name = duration_parts(raw_duration, it)
+        groups[gname]["plans"].append(dict(plan_id=pid, name=display_name, days=days, hours=hours, price=cost, available=True))
     obj = dict(ts=int(time.time()), products=[groups[n] for n in order])
     set_setting("tahir_catalog", json.dumps(obj))
     return obj
@@ -585,13 +587,14 @@ def vsh_load_catalog(refresh=False):
                                     "reseller_price", "selling_price", "base_price", "price_usd", "usd_price", "cost_usd"))
             if price is None:
                 price = _first_num(p, ("price", "cost", "rate", "amount")) or 0.0
-            vname = str(v.get("name") or v.get("title") or v.get("duration") or
-                        v.get("label") or v.get("validity") or ("Variant %s" % vid)).strip()
+            raw_duration = (v.get("name") or v.get("title") or v.get("duration") or
+                            v.get("label") or v.get("validity") or ("Variant %s" % vid))
+            vdays, vhours, vname = duration_parts(raw_duration, v)
             bala = bool(v.get("is_balamod", v.get("balamod", False)))
             mode = str(v.get("api_version_mode") or v.get("mode") or "") if bala else ""
             stock = v.get("stock", v.get("available", v.get("in_stock")))
             avail = True if stock in (None, "") else (str(stock).lower() not in ("0", "false", "no", "out", "unavailable"))
-            plans.append(dict(plan_id=vid, name=vname, price=round(price * rate, 2),
+            plans.append(dict(plan_id=vid, name=vname, days=vdays, hours=vhours, price=round(price * rate, 2),
                               api_price=price, available=avail, balamod=bala, mode=mode))
         if plans:
             groups.append(dict(product_id=str(p.get("product_id") or p.get("id") or n),
@@ -631,6 +634,33 @@ def parse_days(text):
     if u.startswith("y"):
         return max(1, n * 365)
     return max(1, n)
+
+
+def duration_parts(label, raw=None):
+    """Return (days, hours, display_name), preserving hour-based provider plans."""
+    raw = raw if isinstance(raw, dict) else {}
+    text = str(label or "").strip()
+    unit = str(raw.get("duration_unit") or raw.get("validity_unit") or raw.get("unit") or raw.get("period_unit") or "").lower()
+    explicit_hours = raw.get("duration_hours", raw.get("validity_hours", raw.get("hours")))
+    explicit_days = raw.get("duration_days", raw.get("validity_days", raw.get("days")))
+    hours = parse_hours(text)
+    if not hours and explicit_hours not in (None, ""):
+        try: hours = max(0, int(float(explicit_hours)))
+        except (TypeError, ValueError): pass
+    if not hours and unit in ("hour", "hours", "hr", "hrs", "h"):
+        value = raw.get("duration", raw.get("validity", raw.get("duration_value", raw.get("period", ""))))
+        try: hours = max(0, int(float(value)))
+        except (TypeError, ValueError): hours = parse_days(str(value))
+    if hours > 0:
+        return max(1, -(-hours // 24)), hours, (text if is_hour_plan(text) else plan_label(1, hours))
+    days = 0
+    if explicit_days not in (None, ""):
+        try: days = max(1, int(float(explicit_days)))
+        except (TypeError, ValueError): pass
+    if not days: days = parse_days(text)
+    if not text or text.isdigit():
+        text = plan_label(days, 0)
+    return days, 0, text
 
 
 def _extract_vsh_key(payload):
@@ -755,12 +785,17 @@ def buy(rid, plan_id, via="panel"):
     try:
         c.execute("BEGIN IMMEDIATE")
         r = c.execute("SELECT * FROM resellers WHERE id=?", (rid,)).fetchone()
-        pl = c.execute("SELECT pl.*, pr.name pname FROM plans pl JOIN products pr ON pr.id=pl.product_id WHERE pl.id=?",
+        pl = c.execute("SELECT pl.*, pr.name pname, COALESCE(pr.hidden,0) product_hidden "
+                       "FROM plans pl JOIN products pr ON pr.id=pl.product_id WHERE pl.id=?",
                        (plan_id,)).fetchone()
         if not r or not r["active"]:
             raise ValueError("Account disabled")
         if not pl:
             raise ValueError("Plan not found")
+        # Enforce visibility at purchase time too: a reseller bot may still
+        # hold an old/cached plan_id after the product has been hidden.
+        if int(pl["product_hidden"] or 0):
+            raise ValueError("This product is hidden by the administrator and cannot be purchased.")
         if (r["role"] or "reseller") == "user":
             price = user_price_of(pl)
         else:
@@ -2409,7 +2444,16 @@ def api_docs():
 @app.route("/music.json")
 @reseller_required
 def music_json():
-    return jsonify([dict(title=m["title"], url=m["url"]) for m in q("SELECT * FROM music ORDER BY id")])
+    items = []
+    for m in q("SELECT * FROM music ORDER BY id"):
+        info = _music_link_info(m["url"])
+        saved_title = str(m["title"] or "").strip()
+        detected_title = str((info or {}).get("title") or "").strip()
+        if detected_title and (not saved_title or saved_title.lower() in ("youtube song", "spotify song", "music")):
+            saved_title = detected_title
+        items.append(dict(title=saved_title or m["url"], url=m["url"], kind=(info or {}).get("kind", "audio"),
+                          embed_url=(info or {}).get("embed_url", "")))
+    return jsonify(items)
 
 
 @app.route("/media/<path:name>")
@@ -3241,7 +3285,7 @@ def admin_music_metadata():
     info = _music_link_info(request.form.get("url", ""))
     if not info:
         return jsonify({"ok": False, "error": "Paste a valid YouTube or Spotify link."}), 400
-    return jsonify({"ok": True, "title": info.get("title") or "", "kind": info["kind"], "url": info["url"]})
+    return jsonify({"ok": True, "title": info.get("title") or "", "kind": info["kind"], "url": info["url"], "embed_url": info.get("embed_url", "")})
 
 
 @app.route("/admin/music", methods=["GET", "POST"])
@@ -3343,7 +3387,9 @@ def admin_main_api_products():
                 if hit:
                     cost = float(hit[1].get("price") or 0)
                     rp, up = prices(cost)
-                    q("UPDATE plans SET cost=?, price=?, user_price=? WHERE id=?", (cost, rp, up, pl["id"]), commit=True)
+                    d_days, d_hours, d_name = duration_parts(hit[1].get("name"), hit[1])
+                    q("UPDATE plans SET name=?, days=?, hours=?, cost=?, price=?, user_price=? WHERE id=?",
+                      (d_name, d_days, d_hours, cost, rp, up, pl["id"]), commit=True)
                     n += 1
             flash("Prices updated for %d imported plan(s): reseller +%g%%, user +%g%%." % (n, mr, mu), "ok")
             return redirect("/admin/main-api/products")
@@ -3362,10 +3408,13 @@ def admin_main_api_products():
             rp, up = prices(cost)
             ex = q("SELECT id FROM plans WHERE prov_pid=? AND prov_src='tahir'", (pid,), one=True)
             if ex:
+                d_days, d_hours, d_name = duration_parts(pl.get("name"), pl)
                 if overwrite:
-                    q("UPDATE plans SET cost=?, price=?, user_price=? WHERE id=?", (cost, rp, up, ex["id"]), commit=True)
+                    q("UPDATE plans SET name=?, days=?, hours=?, cost=?, price=?, user_price=? WHERE id=?",
+                      (d_name, d_days, d_hours, cost, rp, up, ex["id"]), commit=True)
                     upd += 1
                 else:
+                    q("UPDATE plans SET name=?, days=?, hours=? WHERE id=?", (d_name, d_days, d_hours, ex["id"]), commit=True)
                     skip += 1
                 continue
             pname = (p.get("name") or "Product %s" % p.get("product_id")).strip()
@@ -3375,13 +3424,7 @@ def admin_main_api_products():
             else:
                 prid = q("INSERT INTO products(name,src_name,pos) VALUES(?,?,?)", (pname, pname, next_prod_pos()), commit=True)
                 new_pr += 1
-            hours = int(num(pl.get("hours"), 0))
-            days = int(num(pl.get("days"), 0)) or parse_days(pl.get("name"))
-            if hours <= 0:
-                hours = parse_hours(pl.get("name"))
-            if hours > 0:
-                days = max(-(-hours // 24), 1)
-            name = (pl.get("name") or "").strip() or plan_label(days, hours)
+            days, hours, name = duration_parts(pl.get("name"), pl)
             q("INSERT INTO plans(product_id,name,days,hours,price,user_price,cost,mode,prov_pid,prov_src) VALUES(?,?,?,?,?,?,?,?,?,?)",
               (prid, name, max(days, 1), hours, rp, up, cost, "provider", pid, "tahir"), commit=True)
             new_pl += 1
@@ -3486,7 +3529,9 @@ def admin_vsh_products():
                 if hit:
                     cost = float(hit[1].get("price") or 0)
                     rp, up = prices(cost)
-                    q("UPDATE plans SET cost=?, price=?, user_price=? WHERE id=?", (cost, rp, up, pl["id"]), commit=True)
+                    d_days, d_hours, d_name = duration_parts(hit[1].get("name"), hit[1])
+                    q("UPDATE plans SET name=?, days=?, hours=?, cost=?, price=?, user_price=? WHERE id=?",
+                      (d_name, d_days, d_hours, cost, rp, up, pl["id"]), commit=True)
                     n += 1
             flash("Prices updated for %d imported plan(s): reseller +%g%%, user +%g%%." % (n, mr, mu), "ok")
             return redirect("/admin/vsh/products")
@@ -3506,11 +3551,14 @@ def admin_vsh_products():
             meta = json.dumps(dict(balamod=bool(pl.get("balamod")), mode=pl.get("mode") or ""))
             ex = q("SELECT id FROM plans WHERE prov_pid=? AND prov_src='vsh'", (str(pid),), one=True)
             if ex:
+                d_days, d_hours, d_name = duration_parts(pl.get("name"), pl)
                 if overwrite:
-                    q("UPDATE plans SET cost=?, price=?, user_price=?, prov_meta=? WHERE id=?", (cost, rp, up, meta, ex["id"]), commit=True)
+                    q("UPDATE plans SET name=?, days=?, hours=?, cost=?, price=?, user_price=?, prov_meta=? WHERE id=?",
+                      (d_name, d_days, d_hours, cost, rp, up, meta, ex["id"]), commit=True)
                     upd += 1
                 else:
-                    q("UPDATE plans SET prov_meta=? WHERE id=?", (meta, ex["id"]), commit=True)
+                    q("UPDATE plans SET name=?, days=?, hours=?, prov_meta=? WHERE id=?",
+                      (d_name, d_days, d_hours, meta, ex["id"]), commit=True)
                     skip += 1
                 continue
             pname = (p.get("name") or "Product").strip()
@@ -3522,11 +3570,7 @@ def admin_vsh_products():
             else:
                 prid = q("INSERT INTO products(name,src_name,pos) VALUES(?,?,?)", (pname, pname, next_prod_pos()), commit=True)
                 new_pr += 1
-            hours = parse_hours(pl.get("name"))
-            days = parse_days(pl.get("name"))
-            if hours > 0:
-                days = max(-(-hours // 24), 1)
-            name = (pl.get("name") or "").strip() or plan_label(days, hours)
+            days, hours, name = duration_parts(pl.get("name"), pl)
             q("INSERT INTO plans(product_id,name,days,hours,price,user_price,cost,mode,prov_pid,prov_src,prov_meta) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
               (prid, name, max(days, 1), hours, rp, up, cost, "provider", pid, "vsh", meta), commit=True)
             new_pl += 1

@@ -138,7 +138,7 @@ T["rbase.html"] = HEAD + """Reseller Panel</title><style>""" + CSS2 + """</style
 <a href="/api-docs" class="{{'on' if page=='api'}}">{{ic('code')}} API &amp; Docs</a>
 <a href="/logout">{{ic('logout')}} Logout</a></div>
 <div class="top"><button class="iconbtn" id=bg aria-label="Menu">{{ic('menu',22)}}</button>
-<div class="player" id=pl><button id=pv aria-label="Previous">{{ic('prev',16)}}</button><button id=pp aria-label="Play">{{ic('play',16)}}</button><button id=nx aria-label="Next">{{ic('next',16)}}</button><span id=ttl>…</span><audio id=au preload=auto></audio></div>
+<div class="player" id=pl><button id=pv aria-label="Previous">{{ic('prev',16)}}</button><button id=pp aria-label="Play">{{ic('play',16)}}</button><button id=nx aria-label="Next">{{ic('next',16)}}</button><span id=ttl>…</span><audio id=au preload=metadata></audio><iframe id=musicframe title="Music player" allow="autoplay; encrypted-media; picture-in-picture" style="display:none;border:0;border-radius:10px;width:280px;height:158px" loading="lazy"></iframe></div>
 <button class="iconbtn" id=pal aria-label="Colour" style="margin-left:auto">{{ic('palette',22)}}</button></div>
 <div class="modal" id=mod><div class=bx><h3>{{ic('palette',20)}} Portal colour</h3><div class=mu>Your colour is saved and used on the login page too.</div>
 <div class="sw" id=sw></div><input type=color id=cc value="#3b82f6" style="width:100%;height:46px;padding:2px;border-radius:12px"><button class="o" id=mx style="margin-top:14px;width:100%">Close</button></div></div>
@@ -154,23 +154,21 @@ function pick(c){applyTheme(c);saveTheme(c);cc.value=c;const f=new FormData();f.
 cc.onchange=()=>pick(cc.value);pal.onclick=()=>mod.classList.add('open');mx.onclick=()=>mod.classList.remove('open');mod.onclick=e=>{if(e.target===mod)mod.classList.remove('open')};
 (async()=>{let L=[];try{L=await(await fetch('/music.json')).json()}catch(e){}
 if(!L.length){pl.style.display='none';return}
-const ss=sessionStorage;let i=0;
+const ss=sessionStorage,frame=document.getElementById('musicframe');let i=0,external=false;
 if(ss.mu){const k=L.findIndex(x=>x.url===ss.mu);i=k>=0?k:0}else{i=+localStorage.mi||0;if(i>=L.length)i=0}
-let leaving=false;
 function save(){try{ss.mu=L[i].url;ss.mt=au.currentTime||0;if(!au.paused)ss.ts=Date.now()}catch(e){}}
-function load(n,seek){i=(n+L.length)%L.length;au.src=L[i].url;ttl.textContent=L[i].title;localStorage.mi=i;
- return new Promise(res=>{au.addEventListener('loadedmetadata',()=>{if(seek>0){try{au.currentTime=seek}catch(e){}}res()},{once:true})})}
-function play(){return au.play().catch(()=>{pp.innerHTML=PLAY;arm()})}
-function arm(){['pointerdown','keydown','touchstart'].forEach(ev=>document.addEventListener(ev,()=>{if(au.paused&&ss.mp!=='0')play()},{once:true}))}
-au.onplay=()=>{pp.innerHTML=PAUSE;ss.mp=1};au.onpause=()=>{pp.innerHTML=PLAY;if(!au.ended&&!leaving)ss.mp=0};
-au.ontimeupdate=save;
-['pagehide','beforeunload'].forEach(ev=>addEventListener(ev,()=>{leaving=true;save()}));
-pp.onclick=()=>au.paused?play():au.pause();
-nx.onclick=async()=>{await load(i+1,0);play()};pv.onclick=async()=>{await load(i-1,0);play()};
-au.onended=async()=>{await load(i+1,0);play()};
-let t=+ss.mt||0;if(ss.mp==='1'&&ss.ts){const d=(Date.now()-ss.ts)/1000;if(d<8)t+=d}
-await load(i,t);
-if(ss.mp!=='0')play();else pp.innerHTML=PLAY;
+function stopExternal(){frame.src='';frame.style.display='none';external=false;pp.innerHTML=PLAY}
+function load(n,autoplay){i=(n+L.length)%L.length;const item=L[i];ttl.textContent=item.title||'Music';ttl.title=item.title||'Music';localStorage.mi=i;stopExternal();au.pause();au.removeAttribute('src');au.style.display='';
+ if(item.kind==='youtube'||item.kind==='spotify'||item.embed_url){external=true;au.style.display='none';pp.style.display='';pp.innerHTML=PLAY;pp.onclick=()=>startExternal();if(autoplay)startExternal();return}
+ external=false;au.src=item.url;pp.onclick=()=>au.paused?playAudio():au.pause();if(autoplay)playAudio();}
+function startExternal(){const item=L[i];if(!item||!item.embed_url)return;frame.style.display='block';frame.style.width='min(320px,42vw)';frame.style.height=item.kind==='youtube'?'180px':'152px';frame.allow='autoplay; encrypted-media; picture-in-picture';let src=item.embed_url;
+ if(item.kind==='youtube')src+='?autoplay=1&playsinline=1&controls=1&rel=0';else src+='?utm_source=generator&autoplay=1';
+ frame.src=src;pp.innerHTML=PAUSE;ss.mp='1';}
+function playAudio(){return au.play().catch(()=>{pp.innerHTML=PLAY})}
+au.onplay=()=>{pp.innerHTML=PAUSE;ss.mp=1};au.onpause=()=>{pp.innerHTML=PLAY;if(!au.ended)ss.mp='0'};au.ontimeupdate=save;
+pp.onclick=()=>external?(frame.src?stopExternal():startExternal()):(au.paused?playAudio():au.pause());
+nx.onclick=()=>load(i+1,true);pv.onclick=()=>load(i-1,true);au.onended=()=>load(i+1,true);
+load(i,false);
 })();
 </script></body></html>"""
 
