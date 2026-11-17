@@ -200,3 +200,33 @@ GATEWAY: Admin > Gateway. The old Fampay / Paytm (ZYVO) gateway settings are gon
 PRODUCTS: Admin > Products > "Arrange & rename products": edit any product name, type a position number (1 = top) + Go, or use top / up / down.
   The same names and order are used in the reseller panel, the Telegram bot, and /api/v1/products (new field "position") for everyone who uses your API.
   Imported products keep your custom name when you import again from Tahir API System (no duplicates). New products go to the bottom.
+
+---- v16.1 (AUTO PRICE) ----
+Admin > Auto Price (menu): when Tahir API or VIP Seller Hub RAISES the price of an imported plan, your Reseller AND User prices
+  are raised automatically so they are never below  new provider price + X %  (default 5% for each, changeable on that page).
+  - Checks both APIs in the background every 30 min (5 - 1440, changeable) + "Check prices now" button.
+  - Only RAISES prices. If the provider gets cheaper, your price stays (only the stored cost is updated).
+  - Your current price is kept if it is already higher than new cost + X %.
+  - Per-reseller custom prices that fall below the new reseller price are raised to it.
+  - Admin gets a Telegram "PRICE AUTO-UPDATED" message; the page shows the last 60 increases.
+  - Works only for plans imported from the APIs (mode = provider). Needs the API token saved.
+
+---- v17 (ACCESS & LOGIN) ----
+ADMIN > Access & Login (menu):
+  BOT MAKE: one ON/OFF switch for everybody + one switch per reseller. OFF = menu item hidden and /bot-make closed. Existing bots keep running.
+  TELEGRAM LINK FOR USERS: after sign-up / login a USER must press START in your bot. The site sends him to the bot with a one-time link
+    (t.me/<bot>?start=link_<code>), the bot saves his Chat ID automatically and the waiting page opens his account by itself.
+    Bot link box is optional (the bot username is detected from the token). Untick the box to stop requiring it.
+    One Telegram account can be linked to one account only. Nobody is asked while the bot token is not set.
+  GOOGLE SIGN-UP / LOGIN: paste Client ID + Client secret (Google Cloud Console > Credentials > OAuth client ID, Web application).
+    Add the "Authorised redirect URI" shown on that page. "Sign up with Google" is on the Create Account page, "Continue with Google" on Login.
+    Google users are normal USER accounts (then Telegram link). If a Google user is upgraded to Full Reseller, the normal device approval + Telegram code still apply.
+PREMIUM EMOJI + BACKUP: emoji choices are part of the backup (settings). After "Restore" the bot reloads them at once, and every emoji change
+  sends a fresh backup file to the admin's Telegram about 1 minute later (needs Auto backup ON).
+USERS: the menu item is now "Full Reseller Upgrade" (old: Reseller Update). After paying they become a reseller and see the RESELLER prices.
+
+---- v17.1 ----
+MUSIC ORDER: Admin > Music: every song has up / down arrows next to its number. The order is the play order on the site, and it is kept in the Music backup.
+BOT MAKE: the ON/OFF switch is also at the top of Admin > Bots (same switch as Access & Login). OFF = hidden for every reseller and user (menu, page, upgrade list).
+GOOGLE: Access & Login > Google > "Turn Google OFF" hides the Google button on the Login and Create Account pages and blocks the Google route.
+TELEGRAM LINK: users who already have a Chat ID are never asked again; only users without one see the link page.

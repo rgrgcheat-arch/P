@@ -37,15 +37,15 @@ T["admin_gateway.html"] = r"""{% extends 'abase.html' %}{% block c %}<h2>{{ic('q
 <details style="margin-top:10px"><summary class=mu style="cursor:pointer">Advanced (optional)</summary>
 <p class=mu>Webhook secret{% if pg_sec %} &mdash; saved. Leave empty to keep it.{% endif %} (not needed: payments are checked automatically every few seconds)</p><input name=pg_secret type=password autocomplete=off style="width:100%">
 <p class=hint>Webhook URL (only if you want instant confirmation): <code>{{hook}}</code></p></details></form></div>
-<div class=card><h3>Amounts &amp; Reseller Update price</h3><form method=post><input type=hidden name=action value=save_common>
+<div class=card><h3>Amounts &amp; Full Reseller Upgrade price</h3><form method=post><input type=hidden name=action value=save_common>
 <p class=mu>Add-balance amounts shown to resellers/users (comma separated, e.g. <code>100, 200, 500, 1000</code>)</p><input name=amounts value="{{amounts}}" style="width:100%" inputmode=numeric>
-<p class=mu>Reseller Update price (a user who pays this amount becomes a reseller). <b>0</b> = Reseller Update closed.</p><input name=upgrade_price value="{{upgrade_price}}" inputmode=numeric style="width:100%">
+<p class=mu>Full Reseller Upgrade price (a user who pays this amount becomes a reseller). <b>0</b> = Full Reseller Upgrade closed.</p><input name=upgrade_price value="{{upgrade_price}}" inputmode=numeric style="width:100%">
 <button class=g style="margin-top:12px">{{ic('save')}} Save</button></form></div>
 {% if test %}<div class=card><h3>{{test.who}} test</h3>{% if test.ok %}<div class="flash ok">{{test.note or 'QR created successfully.'}} Order {{test.order}}</div>
 <div style="background:#fff;padding:12px;border-radius:12px;max-width:260px">{% if test.svg %}{{test.svg}}{% elif test.img %}<img src="{{test.img}}" style="width:100%">{% endif %}</div>
 {% else %}<div class="flash err">Failed: {{test.msg}}</div>{% endif %}</div>{% endif %}
 <div class="card tw"><h3>Recent payments</h3><table><tr><th>User</th><th>Amount</th><th>For</th><th>Gateway</th><th>Status</th><th>Ref</th><th>Time</th></tr>
-{% for t in tops %}<tr><td>{{t.username}}</td><td>{{t.amount|cur}}</td><td>{{'Reseller Update' if t.purpose=='upgrade' else 'Balance'}}</td><td>{{'My gateway' if t.provider=='pgw' else ('Paytm (old)' if t.provider=='zyvo' else 'Fampay (old)')}}</td><td>{{t.status}}</td><td>{{t.utr or ''}}</td><td>{{t.created|dt}}</td></tr>{% else %}<tr><td colspan=7>None yet</td></tr>{% endfor %}</table></div>{% endblock %}"""
+{% for t in tops %}<tr><td>{{t.username}}</td><td>{{t.amount|cur}}</td><td>{{'Full Reseller Upgrade' if t.purpose=='upgrade' else 'Balance'}}</td><td>{{'My gateway' if t.provider=='pgw' else ('Paytm (old)' if t.provider=='zyvo' else 'Fampay (old)')}}</td><td>{{t.status}}</td><td>{{t.utr or ''}}</td><td>{{t.created|dt}}</td></tr>{% else %}<tr><td colspan=7>None yet</td></tr>{% endfor %}</table></div>{% endblock %}"""
 
 # ---- Admin > Products: rename + own order
 sub("admin_products.html", "<div class=card><h3>Add Product</h3>",

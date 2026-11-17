@@ -88,4 +88,122 @@ T["generate.html"] = T["generate.html"].replace(
     "x.name.toUpperCase()+' - '+CU+x.price",
     "x.name.toUpperCase()+' - '+(x.provider?x.provider+' · ':'')+CU+x.price", 1)
 
+# ---- v16.1: AUTO PRICE (admin menu link + page)
+_old2 = '<a href="/admin/vsh" class="{{\'on\' if page==\'vsh\'}}">VIP Seller Hub</a>'
+assert _old2 in T["abase.html"]
+T["abase.html"] = T["abase.html"].replace(
+    _old2, _old2 + '<a href="/admin/auto-price" class="{{\'on\' if page==\'autoprice\'}}">Auto Price</a>', 1)
+
+T["admin_auto_price.html"] = """{% extends 'abase.html' %}{% block c %}<h2>{{ic('wallet',24)}} Auto Price</h2>
+<div class=card><h3>Provider price goes UP &rarr; your price goes up automatically</h3>
+<p class=mu>Every <b>{{cf.mins}}</b> minutes the panel checks Tahir API and VIP Seller Hub. If a provider raises the price of a plan you imported,
+your selling price is raised so it is never below <b>new provider price + the % below</b>. Prices are only raised, never lowered. Reseller and User prices both update.</p>
+<form method=post><input type=hidden name=action value=save>
+<label style="display:flex;gap:8px;align-items:center;margin:10px 0"><input type=checkbox name=on value=1 {{'checked' if cf.on}}> Auto price is ON</label>
+<p class=mu>Extra % for RESELLER price</p><input name=pr type=number step=any min=0 value="{{cf.pr|money}}" style="width:120px">
+<p class=mu style="margin-top:10px">Extra % for USER price</p><input name=pu type=number step=any min=0 value="{{cf.pu|money}}" style="width:120px">
+<p class=mu style="margin-top:10px">Check every (minutes, 5 - 1440)</p><input name=mins type=number min=5 max=1440 value="{{cf.mins}}" style="width:120px">
+<br><button class=g style="margin-top:12px">{{ic('check')}} Save</button></form></div>
+<div class=card><h3>Check now</h3>
+{% if st %}<div class=mu>Last check: {{st.ts|dt}} &mdash; {{st.checked}} plan(s) checked, {{st.changed}} raised.</div>
+{% for e in st.errors %}<div class=mu style="color:#f87171">{{e}}</div>{% endfor %}{% else %}<div class=mu>No check yet.</div>{% endif %}
+<form method=post style="margin-top:10px"><input type=hidden name=action value=run><button>{{ic('bolt')}} Check prices now</button></form></div>
+<div class=card><h3>Recent automatic increases</h3>
+{% if not log %}<div class=mu>Nothing yet.</div>{% endif %}
+{% for c in log %}<div style="padding:8px 0;border-top:1px solid var(--bd)"><b>{{c.product}}</b> &mdash; {{c.plan}} <span class="pill c">{{c.src}}</span>
+<div class=mu>{{c.ts|dt}}</div>
+<div class=mu>Provider {{c.old_cost|cur}} &rarr; {{c.new_cost|cur}} &nbsp;|&nbsp; Reseller {{c.old_rp|cur}} &rarr; {{c.new_rp|cur}} &nbsp;|&nbsp; User {{c.old_up|cur}} &rarr; {{c.new_up|cur}}</div></div>{% endfor %}</div>
+{% endblock %}"""
+
+# ---- v17: Bot Make switch, Telegram link page, Google button, Admin > Access, Full Reseller Upgrade wording
+from templates_ui2 import LGHEAD as _LGH, LGFOOT as _LGF, FLASH as _FL  # noqa: E402
+
+_gsvg = ('<svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.6-.4-3.9z"/>'
+         '<path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 8 3l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>'
+         '<path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/>'
+         '<path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.6-.4-3.9z"/></svg>')
+
+# Bot Make link only when the admin allows it
+_o = '<a href="/bot-make" class="{{\'on\' if page==\'botmake\'}}">{{ic(\'bot\')}} Bot Make</a>'
+assert _o in T["rbase.html"]
+T["rbase.html"] = T["rbase.html"].replace(_o, "{% if bm_allowed(r) %}" + _o + "{% endif %}", 1)
+
+# admin menu
+_o = '<a href="/admin/auto-price" class="{{\'on\' if page==\'autoprice\'}}">Auto Price</a>'
+assert _o in T["abase.html"]
+T["abase.html"] = T["abase.html"].replace(_o, _o + '<a href="/admin/access" class="{{\'on\' if page==\'access\'}}">Access &amp; Login</a>', 1)
+
+# Google button on login + sign-up
+_o = "CREATE NEW ACCOUNT</a>{% endif %}"
+assert _o in T["login.html"]
+T["login.html"] = T["login.html"].replace(
+    _o, _o + "{% if google_on() %}<div class=\"or\"><i></i>OR<i></i></div><a class=\"mk\" href=\"/auth/google\">" + _gsvg + " CONTINUE WITH GOOGLE</a>{% endif %}", 1)
+_o = '<a class="back" href="/login">Already have an account?'
+assert _o in T["signup.html"]
+T["signup.html"] = T["signup.html"].replace(
+    _o, "{% if google_on() %}<div class=\"or\"><i></i>OR<i></i></div><a class=\"mk\" href=\"/auth/google\">" + _gsvg + " SIGN UP WITH GOOGLE</a>{% endif %}" + _o, 1)
+
+# Full Reseller Upgrade page text
+T["upgrade.html"] = T["upgrade.html"].replace(
+    "Upgrade your account to a RESELLER account.",
+    "Unlock FULL RESELLER: you get the cheaper RESELLER prices on every product, plus all reseller tools.", 1)
+T["upgrade.html"] = T["upgrade.html"].replace("Pay {{CURRENCY}}{{price}} &amp; become Reseller", "Pay {{CURRENCY}}{{price}} &amp; unlock Full Reseller", 1)
+
+# "Link Telegram" page shown to users right after sign-up / login
+T["link_tg.html"] = _LGH + """<div class="logo-t">{{ic('bot',30)}}</div><h1>Link Telegram</h1><div class="dv"><i></i><u></u><i></i></div>""" + _FL + """
+<p class=mu style="text-align:center;margin:0 0 14px">One last step, <b>{{who}}</b>.<br>Press the button, then press <b>START</b> in the bot.<br>Your account is linked automatically and this page opens by itself.</p>
+{% if url %}<a class="btn" href="{{url}}" target="_blank" rel="noopener" style="display:block;text-align:center;font-size:16px">{{ic('send',20)}} Open Telegram bot</a>
+<div class="cd" id=st style="font-size:16px;margin-top:14px">Waiting for START&hellip;</div>
+{% else %}<div class="flash err">The bot link is not ready yet. Please tell the admin (Admin &gt; Access &amp; Login).</div>{% endif %}
+<a class="btn" href="/logout" style="display:block;text-align:center;margin-top:16px;background:none;border:1px solid var(--bd);box-shadow:none">Logout</a>
+<script>
+async function p(){try{const j=await(await fetch('/link-telegram/status',{cache:'no-store'})).json();
+ if(j.linked){document.getElementById('st').textContent='Linked! Opening your account...';location.href='/dashboard';return}}catch(e){}
+ setTimeout(p,2500)}
+if(document.getElementById('st'))p();
+</script>""" + _LGF + "</body></html>"
+
+# Admin > Access & Login
+T["admin_access.html"] = """{% extends 'abase.html' %}{% block c %}<h2>{{ic('shield2',24)}} Access &amp; Login</h2>
+<div class=card><h3>{{ic('bot',20)}} Bot Make</h3>
+<form method=post style="margin-bottom:12px"><input type=hidden name=action value=bm_global><input type=hidden name=on value="{{'0' if bm_on else '1'}}">
+<button class="{{'g' if bm_on else 'r'}}">{{'Turn Bot Make OFF for everybody' if bm_on else 'Turn Bot Make ON'}}</button> <span class="pill {{'a' if bm_on else 'e'}}">{{'ON' if bm_on else 'OFF'}}</span></form>
+<p class=mu>Per reseller (only works while the switch above is ON). OFF = he does not see Bot Make and cannot open it. Bots he already made keep running.</p>
+{% for x in rs %}<form method=post style="display:flex;gap:10px;align-items:center;padding:6px 0;border-top:1px solid var(--bd)"><input type=hidden name=action value=bm_one><input type=hidden name=rid value="{{x.id}}">
+<b style="flex:1">{{x.username}}</b><span class="pill {{'e' if x.off else 'a'}}">{{'OFF' if x.off else 'ON'}}</span><button class=o>{{'Turn ON' if x.off else 'Turn OFF'}}</button></form>{% else %}<div class=mu>No resellers yet.</div>{% endfor %}</div>
+<div class=card><h3>{{ic('send',20)}} Telegram link for users</h3>
+<p class=mu>After sign-up / login a user must press START in your bot. His Chat ID is then saved automatically (no manual linking).</p>
+<form method=post><input type=hidden name=action value=link>
+<label style="display:flex;gap:8px;align-items:center;margin:8px 0"><input type=checkbox name=on value=1 {{'checked' if link_on}}> Users must link Telegram before entering the site</label>
+<p class=mu>Bot link (optional, e.g. https://t.me/YourBot){% if bot_un %} &mdash; detected: <b>@{{bot_un}}</b>{% endif %}</p>
+<input name=bot_link value="{{bot_link}}" placeholder="https://t.me/YourBot" style="width:100%">
+{% if not has_token %}<p class=mu style="color:#f87171">Bot token is not set (Admin &gt; Telegram). Until then nobody is asked to link.</p>{% endif %}
+<button class=g style="margin-top:12px">{{ic('check')}} Save</button></form></div>
+<div class=card><h3>Google sign-up / login</h3>
+<form method=post style="margin-bottom:12px"><input type=hidden name=action value=google_toggle><input type=hidden name=on value="{{'0' if g_on else '1'}}">
+<button class="{{'g' if g_on else 'r'}}">{{'Turn Google OFF (hide it everywhere)' if g_on else 'Turn Google ON'}}</button> <span class="pill {{'a' if g_on else 'e'}}">{{'ON' if g_on else 'OFF'}}</span></form>
+<p class=mu>1) Google Cloud Console &rarr; APIs &amp; Services &rarr; Credentials &rarr; Create OAuth client ID (Web application).<br>2) Put this in <b>Authorised redirect URIs</b>:</p>
+<input readonly value="{{redirect_uri}}" onclick="this.select()" style="width:100%"><p class=mu style="margin-top:10px">3) Paste the Client ID and Client secret here.</p>
+<form method=post><input type=hidden name=action value=google>
+<p class=mu>Client ID</p><input name=cid value="{{g_cid}}" autocomplete=off style="width:100%">
+<p class=mu style="margin-top:10px">Client secret{% if g_tail %} &mdash; saved (ends with <code>{{g_tail}}</code>). Leave empty to keep it.{% endif %}</p><input name=secret type=password autocomplete=off style="width:100%">
+<p class=mu style="margin-top:10px">Site address (optional - only if the redirect link above shows the wrong address)</p><input name=public_url value="{{public_url}}" placeholder="https://your-site.onrender.com" style="width:100%">
+<button class=g style="margin-top:12px">{{ic('check')}} Save</button></form></div>{% endblock %}"""
+
+# ---- v17.1: Bot Make switch on the Bots page, upgrade page hides Bot Make when OFF, music up / down
+_o = "{% block c %}"
+T["admin_bots.html"] = T["admin_bots.html"].replace(_o, _o + """<div class=card><h3>{{ic('bot',20)}} Bot Make switch</h3>
+<form method=post action="/admin/access"><input type=hidden name=action value=bm_global><input type=hidden name=next value="/admin/bots"><input type=hidden name=on value="{{'0' if bm_global_on() else '1'}}">
+<button class="{{'g' if bm_global_on() else 'r'}}">{{'Turn Bot Make OFF for everybody' if bm_global_on() else 'Turn Bot Make ON'}}</button> <span class="pill {{'a' if bm_global_on() else 'e'}}">{{'ON' if bm_global_on() else 'OFF'}}</span>
+<span class=mu> One switch per reseller: Access &amp; Login.</span></form></div>""", 1)
+_o = "<div>&#10003; Bot Make (your own bot)</div>"
+assert _o in T["upgrade.html"]
+T["upgrade.html"] = T["upgrade.html"].replace(_o, "{% if bm_global_on() %}" + _o + "{% endif %}", 1)
+
+_o = "<tr><td>{{loop.index}}</td><td>{{m.title}}</td>"
+assert _o in T["admin_music.html"]
+T["admin_music.html"] = T["admin_music.html"].replace(_o, """<tr><td style="white-space:nowrap"><b>{{loop.index}}</b>
+<form method=post style="display:inline"><input type=hidden name=action value=move><input type=hidden name=id value="{{m.id}}"><input type=hidden name=dir value=up><button class=o {{'disabled' if loop.first}} aria-label="Move up">&#9650;</button></form>
+<form method=post style="display:inline"><input type=hidden name=action value=move><input type=hidden name=id value="{{m.id}}"><input type=hidden name=dir value=down><button class=o {{'disabled' if loop.last}} aria-label="Move down">&#9660;</button></form></td><td>{{m.title}}</td>""", 1)
+
 TEMPLATES = T

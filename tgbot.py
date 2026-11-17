@@ -116,7 +116,8 @@ def _norm(e):
 
 class Bot:
     def __init__(self, get_token, get_admin, on_device, brand="OFFICIAL SELLER", on_claim=None, on_seen=None,
-                 packs=None, prem_on=None, get_overrides=None):
+                 packs=None, prem_on=None, get_overrides=None, on_link=None):
+        self.on_link = on_link              # (chat_id, token, from_dict) -> (ok, html text)  (/start link_<token>)
         self.get_token = get_token          # () -> bot token (str)
         self.get_admin = get_admin          # () -> admin chat id (str)
         self.on_device = on_device          # (device_row_id:int, approve:bool) -> text
@@ -498,6 +499,19 @@ class Bot:
                           else "❌ Wrong password (or too many tries).")
                 return
             if str(cid) == str(self.get_admin() or "") and self._emoji_tools(cid, m):
+                return
+            raw_t = (m.get("text") or "").strip()
+            if self.on_link and text.startswith("/start") and re.match(r"^/start(@\w+)?\s+link_[0-9a-f]{16,64}\s*$", text):
+                token = raw_t.split(None, 1)[1].strip()[5:].lower()
+                frm = m.get("from") or {}
+                try:
+                    nm = " ".join(x for x in (frm.get("first_name"), frm.get("last_name")) if x)
+                    if self.on_seen:
+                        self.on_seen(cid, nm, frm.get("username") or "")
+                    ok, msg = self.on_link(cid, token, frm)
+                except Exception:
+                    ok, msg = False, "\u274C Something went wrong. Go back to the website and try again."
+                self.send(cid, msg)
                 return
             if text.startswith("/start") or text.startswith("/id") or text.startswith("/myid"):
                 if self.on_seen:

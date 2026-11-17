@@ -1347,7 +1347,7 @@ def credit_topup(tid, d):
             return False
         c.execute("UPDATE topups SET status='paid', utr=?, paid_at=? WHERE id=?", (utr, int(time.time()), tid))
         upgrade = t["purpose"] == "upgrade"
-        if upgrade:                                         # paid "Reseller Update": the account becomes a reseller, no balance is added
+        if upgrade:                                         # paid "Full Reseller Upgrade": the account becomes a reseller, no balance is added
             c.execute("UPDATE resellers SET role='reseller', otp_on=1 WHERE id=? AND role='user'", (t["reseller_id"],))
             c.execute("INSERT OR REPLACE INTO settings(k,v) VALUES(?,?)", ("upg_%d" % t["reseller_id"], "1"))
         else:
@@ -1440,6 +1440,9 @@ def reseller_required(f):
             else:
                 session.clear()
                 return blocked_page()
+        if (r["role"] == "user" and not (r["tg_chat"] or "").strip() and link_required()
+                and not request.path.startswith(LINK_OK)):          # users must link Telegram first (website -> bot)
+            return redirect("/link-telegram")
         request.r = r
         return f(*a, **k)
     return w
@@ -1568,7 +1571,7 @@ def mask_id(tc):
 
 
 bot = tgbot.Bot(tg_token, tg_admin, device_decision, BRAND, claim_admin, tg_seen,
-                packs=EMOJI_PACKS, prem_on=lambda: get_setting("prem_on", "1") == "1", get_overrides=emoji_overrides)
+                packs=EMOJI_PACKS, prem_on=lambda: get_setting("prem_on", "1") == "1", get_overrides=emoji_overrides, on_link=lambda *a: tg_link_claim(*a))
 
 
 def ua_label(ua):
@@ -1639,7 +1642,7 @@ def notify_upgrade(r, amount):
         return
     try:
         if tg_admin():
-            bot.send(tg_admin(), "<blockquote>\U0001F195 <b>RESELLER UPDATE</b></blockquote>\n\U0001F464 User: <b>%s</b> is now a RESELLER\n"
+            bot.send(tg_admin(), "<blockquote>\U0001F195 <b>FULL RESELLER UPGRADE</b></blockquote>\n\U0001F464 User: <b>%s</b> is now a RESELLER\n"
                                  "\U0001F4B8 Paid: <b>%s</b>\n\U0001F552 %s" % (esc(r["username"]), inr(amount), fmt(time.time())),
                      what="reseller upgrade (%s)" % r["username"])
     except Exception:
@@ -2395,7 +2398,7 @@ def upgrade():
     price = upgrade_price()
     if request.method == "POST":
         if price <= 0 or not gw_is_ready():
-            flash("Reseller Update is not available right now.", "err")
+            flash("Full Reseller Upgrade is not available right now.", "err")
             return redirect("/upgrade")
         try:
             tid = start_payment(r["id"], price, "upgrade")
@@ -2559,7 +2562,7 @@ def api_docs():
 @reseller_required
 def music_json():
     items = []
-    for m in q("SELECT * FROM music ORDER BY id"):
+    for m in q("SELECT * FROM music ORDER BY pos, id"):
         info = _music_link_info(m["url"])
         saved_title = str(m["title"] or "").strip()
         detected_title = str((info or {}).get("title") or "").strip()
@@ -3227,6 +3230,7 @@ def admin_telegram():
         elif a == "reset_emoji":
             set_setting("emoji_map", "{}")
             bot.refresh_map()
+            schedule_emoji_backup()
             flash("Emoji choices reset to automatic", "ok")
         elif a == "test_alert":
             ok, err = send_bounded(tg_admin(), purchase_text("SAMPLE PRODUCT", 1, 20, 824.44, "5456242 : 49892697",
@@ -3334,6 +3338,7 @@ def admin_emoji_set():
         m.pop(role, None)
     set_setting("emoji_map", json.dumps(m))
     bot.refresh_map()
+    schedule_emoji_backup()
     return jsonify(ok=True, cid=cid or bot.emap.get(role.replace("\ufe0f", ""), ""), found=found)
 
 
@@ -3351,6 +3356,7 @@ def admin_emoji_bulk():
     if n:
         set_setting("emoji_map", json.dumps(m))
         bot.refresh_map()
+        schedule_emoji_backup()
     return jsonify(ok=bool(n), n=n)
 
 
@@ -3415,6 +3421,17 @@ def admin_music():
                     except OSError:
                         pass
                 q("DELETE FROM music WHERE id=?", (m["id"],), commit=True)
+        elif request.form.get("action") == "move":
+            rows_ = [x["id"] for x in q("SELECT id FROM music ORDER BY pos, id")]
+            try:
+                i = rows_.index(int(request.form.get("id", "0")))
+            except ValueError:
+                i = -1
+            j = i - 1 if request.form.get("dir") == "up" else i + 1
+            if i >= 0 and 0 <= j < len(rows_):
+                rows_[i], rows_[j] = rows_[j], rows_[i]
+                for n_, mid_ in enumerate(rows_, 1):
+                    q("UPDATE music SET pos=? WHERE id=?", (n_, mid_), commit=True)
         elif q("SELECT COUNT(*) FROM music", one=True)[0] >= MAX_MUSIC:
             flash("Maximum %d songs allowed" % MAX_MUSIC, "err")
         else:
@@ -3440,20 +3457,20 @@ def admin_music():
                     # YouTube and Spotify remain on their official embed players.
                     url = link_info["url"]
                     title = title or link_info.get("title") or ("YouTube song" if link_info["kind"] == "youtube" else "Spotify song")
-                    q("INSERT INTO music(title,url) VALUES(?,?)", (title, url), commit=True)
+                    q("INSERT INTO music(title,url,pos) VALUES(?,?,(SELECT COALESCE(MAX(pos),0)+1 FROM music))", (title, url), commit=True)
                     flash("Song link added. It will play using the official provider player.", "ok")
                 else:
                     # A direct audio file URL is downloaded into this website's server storage.
                     try:
                         local_url, detected_title = _download_direct_audio(url)
-                        q("INSERT INTO music(title,url) VALUES(?,?)", (title or detected_title, local_url), commit=True)
+                        q("INSERT INTO music(title,url,pos) VALUES(?,?,(SELECT COALESCE(MAX(pos),0)+1 FROM music))", (title or detected_title, local_url), commit=True)
                         flash("Audio downloaded to website storage and added to Music.", "ok")
                     except ValueError as e:
                         flash(str(e), "err")
             else:
                 flash("Upload a file or paste a direct audio URL", "err")
         return redirect("/admin/music")
-    return render_template("admin_music.html", rows=q("SELECT * FROM music ORDER BY id"), mx=MAX_MUSIC, page="music")
+    return render_template("admin_music.html", rows=q("SELECT * FROM music ORDER BY pos, id"), mx=MAX_MUSIC, page="music")
 
 
 # ---------------------------------------------------------------- admin: main API
@@ -3855,7 +3872,7 @@ BACKUP_TABLES = ["products", "plans", "resellers", "custom_prices", "license_key
 @admin_required
 def admin_backup():
     counts = {t: q("SELECT COUNT(*) FROM %s" % t, one=True)[0] for t in BACKUP_TABLES}
-    songs = q("SELECT * FROM music ORDER BY id")
+    songs = q("SELECT * FROM music ORDER BY pos, id")
     size = 0
     for m in songs:
         try:
@@ -4020,6 +4037,10 @@ def admin_backup_restore():
                 c.execute("INSERT INTO %s(%s) VALUES(%s)" % (t, ",".join(keys), ",".join("?" * len(keys))), vals)
                 total += 1
         c.execute("COMMIT")
+        try:
+            bot.refresh_map()                                   # premium emoji choices come back to life at once
+        except Exception:
+            pass
         flash("Backup restored (%d records). Music is not part of this backup - restore it from the Music backup below." % total, "ok")
     except Exception as e:
         try:
@@ -4036,7 +4057,7 @@ def admin_backup_restore():
 @app.route("/admin/music/backup")
 @admin_required
 def admin_music_backup():
-    rows = [dict(r) for r in q("SELECT title, url FROM music ORDER BY id")]
+    rows = [dict(r) for r in q("SELECT title, url FROM music ORDER BY pos, id")]
     fd, path = tempfile.mkstemp(suffix=".zip", dir=DATA_DIR)
     os.close(fd)
     with zipfile.ZipFile(path, "w", zipfile.ZIP_STORED) as z:          # audio is already compressed
@@ -4093,10 +4114,444 @@ def admin_music_restore():
         url = str(m.get("url") or "")
         if url.startswith("/media/") and not os.path.isfile(os.path.join(MUSIC_DIR, secure_filename(os.path.basename(url)))):
             continue                                                    # file missing inside the zip
-        q("INSERT INTO music(title,url) VALUES(?,?)", (str(m.get("title") or "")[:200], url), commit=True)
+        q("INSERT INTO music(title,url,pos) VALUES(?,?,(SELECT COALESCE(MAX(pos),0)+1 FROM music))", (str(m.get("title") or "")[:200], url), commit=True)
         n_rows += 1
     flash("Music restored: %d song(s), %d audio file(s)." % (n_rows, n_files), "ok")
     return redirect("/admin/backup")
+
+
+# ---------------------------------------------------------------- v17: ACCESS (Bot Make switch, Telegram link for users, Google login)
+def _v17_schema():
+    c = db()
+    try:
+        cols = [r[1] for r in c.execute("PRAGMA table_info(resellers)")]
+        for col in ("gid", "email"):
+            if col not in cols:
+                c.execute("ALTER TABLE resellers ADD COLUMN %s TEXT DEFAULT ''" % col)
+        mcols = [r[1] for r in c.execute("PRAGMA table_info(music)")]
+        if "pos" not in mcols:
+            c.execute("ALTER TABLE music ADD COLUMN pos INTEGER NOT NULL DEFAULT 0")
+            for n_, r_ in enumerate(c.execute("SELECT id FROM music ORDER BY id").fetchall(), 1):
+                c.execute("UPDATE music SET pos=? WHERE id=?", (n_, r_[0]))
+        c.execute("CREATE TABLE IF NOT EXISTS tg_link(token TEXT PRIMARY KEY, rid INTEGER NOT NULL, ts INTEGER NOT NULL)")
+        c.commit()
+    finally:
+        c.close()
+
+
+_v17_schema()
+
+
+# ---- Bot Make ON / OFF (global switch + one switch per reseller)
+def bm_allowed(r):
+    try:
+        if get_setting("botmake_on", "1") == "0":
+            return False
+        return get_setting("bm_off_%d" % r["id"], "0") != "1"
+    except Exception:
+        return True
+
+
+app.jinja_env.globals["bm_allowed"] = bm_allowed
+app.jinja_env.globals["bm_global_on"] = lambda: get_setting("botmake_on", "1") != "0"
+
+
+@app.before_request
+def _bm_gate():
+    if request.path.startswith("/bot-make") and session.get("rid"):
+        r = q("SELECT id FROM resellers WHERE id=?", (session["rid"],), one=True)
+        if r and not bm_allowed(r):
+            flash("Bot Make is turned off by the admin.", "err")
+            return redirect("/dashboard")
+
+
+# ---- Telegram link for USER accounts: website -> bot (/start link_<token>) -> account linked automatically
+LINK_OK = ("/link-telegram", "/logout", "/theme", "/music.json", "/media/")
+_BOT_UN = {}
+
+
+def link_required():
+    return get_setting("tg_link_required", "1") != "0" and bool(tg_token())
+
+
+def tg_bot_username():
+    m = re.search(r"(?:t\.me/|telegram\.me/|^@)([A-Za-z0-9_]{4,32})", (get_setting("tg_bot_link") or "").strip())
+    if m:
+        return m.group(1)
+    tok = tg_token()
+    if tok in _BOT_UN:
+        return _BOT_UN[tok]
+    try:
+        me = bot.api("getMe", _timeout=6)
+        un = str((me or {}).get("username") or "") if isinstance(me, dict) else ""
+    except Exception:
+        un = ""
+    if un:
+        _BOT_UN[tok] = un
+    return un
+
+
+def tg_link_claim(cid, token, frm):
+    """Called by the bot when someone sends /start link_<token>. Returns (ok, html text for the chat)."""
+    row = q("SELECT * FROM tg_link WHERE token=?", (token,), one=True)
+    if not row or time.time() - row["ts"] > 1800:
+        return False, "\u274C This link has expired.\nGo back to the website and press the Telegram button again."
+    r = q("SELECT * FROM resellers WHERE id=? AND deleted=0", (row["rid"],), one=True)
+    if not r:
+        return False, "\u274C Account not found."
+    other = q("SELECT username FROM resellers WHERE tg_chat=? AND id<>? AND deleted=0", (str(cid), r["id"]), one=True)
+    if other:
+        return False, "\u274C This Telegram account is already linked to another account."
+    q("UPDATE resellers SET tg_chat=? WHERE id=?", (str(cid), r["id"]), commit=True)
+    q("DELETE FROM tg_link WHERE rid=?", (r["id"],), commit=True)
+    try:
+        if tg_admin():
+            bot.send(tg_admin(), "<blockquote>\U0001F517 <b>TELEGRAM LINKED</b></blockquote>\n\U0001F464 User: <b>%s</b>\n"
+                                 "\U0001F194 Chat ID: <code>%s</code>" % (esc(r["username"]), esc(cid)), what="telegram linked")
+    except Exception:
+        pass
+    return True, ("\u2705 <b>%s</b>\n\nYour account <b>%s</b> is now linked.\nGo back to the website &mdash; it opens by itself. "
+                  "Purchase alerts will arrive here." % (esc(BRAND), esc(r["username"])))
+
+
+@app.route("/link-telegram")
+@reseller_required
+def link_telegram():
+    r = request.r
+    if r["role"] != "user" or (r["tg_chat"] or "").strip() or not tg_token():
+        return redirect("/dashboard")
+    un = tg_bot_username()
+    row = q("SELECT * FROM tg_link WHERE rid=?", (r["id"],), one=True)
+    if row and time.time() - row["ts"] < 1500:
+        token = row["token"]
+    else:
+        token = secrets.token_hex(12)
+        q("DELETE FROM tg_link WHERE rid=? OR ts<?", (r["id"], int(time.time()) - 3600), commit=True)
+        q("INSERT INTO tg_link(token,rid,ts) VALUES(?,?,?)", (token, r["id"], int(time.time())), commit=True)
+    url = ("https://t.me/%s?start=link_%s" % (un, token)) if un else ""
+    return render_template("link_tg.html", title="Link Telegram", url=url, uname=un, who=r["username"])
+
+
+@app.route("/link-telegram/status")
+@reseller_required
+def link_telegram_status():
+    return jsonify(linked=bool((request.r["tg_chat"] or "").strip()))
+
+
+# ---- Google sign-up / login (OAuth 2.0, needs Client ID + Secret from Google Cloud Console)
+def google_conf():
+    return (get_setting("google_client_id", "").strip(), get_setting("google_client_secret", "").strip())
+
+
+def google_on():
+    cid, sec = google_conf()
+    return bool(cid and sec) and get_setting("google_on", "1") != "0"
+
+
+app.jinja_env.globals["google_on"] = google_on
+
+
+def google_redirect_uri():
+    base = (get_setting("public_url") or "").strip().rstrip("/") or request.host_url.rstrip("/")
+    return base + "/auth/google/callback"
+
+
+@app.route("/auth/google")
+def auth_google():
+    if not google_on():
+        flash("Google sign-in is not available right now.", "err")
+        return redirect("/login")
+    if session.get("rid"):
+        return redirect("/dashboard")
+    from urllib.parse import urlencode
+    state = secrets.token_urlsafe(24)
+    session["g_state"] = state
+    qs = urlencode(dict(client_id=google_conf()[0], redirect_uri=google_redirect_uri(), response_type="code",
+                        scope="openid email profile", state=state, prompt="select_account"))
+    return redirect("https://accounts.google.com/o/oauth2/v2/auth?" + qs)
+
+
+@app.route("/auth/google/callback")
+def auth_google_callback():
+    import requests
+    dev, is_new = get_dev()
+    ip = request.remote_addr or "?"
+
+    def out(resp):
+        return set_dev_cookie(resp, dev, is_new)
+    st = session.pop("g_state", None)
+    if request.args.get("error") or not st or not same(st, request.args.get("state", "")) or not request.args.get("code"):
+        flash("Google sign-in was cancelled or expired. Please try again.", "err")
+        return out(redirect("/login"))
+    if rl_blocked("gauth:" + ip, 20, 600):
+        flash("Too many attempts. Please wait 10 minutes.", "err")
+        return out(redirect("/login"))
+    rl_hit("gauth:" + ip)
+    cid, sec = google_conf()
+    try:
+        tj = requests.post("https://oauth2.googleapis.com/token", timeout=12, data=dict(
+            code=request.args["code"], client_id=cid, client_secret=sec,
+            redirect_uri=google_redirect_uri(), grant_type="authorization_code")).json()
+        at = tj.get("access_token")
+        if not at:
+            raise ValueError(tj.get("error_description") or tj.get("error") or "no token")
+        info = requests.get("https://openidconnect.googleapis.com/v1/userinfo", timeout=12,
+                            headers={"Authorization": "Bearer " + at}).json()
+    except Exception as e:
+        flash("Google sign-in failed: %s" % str(e)[:100], "err")
+        return out(redirect("/login"))
+    sub, email = str(info.get("sub") or ""), str(info.get("email") or "").strip().lower()
+    if not sub or not email or info.get("email_verified") is False:
+        flash("Google did not give a verified email. Please try again.", "err")
+        return out(redirect("/login"))
+    r = q("SELECT * FROM resellers WHERE gid=? AND deleted=0", (sub,), one=True)
+    if not r:
+        if not signup_on():
+            flash("New accounts are closed right now. Please contact admin.", "err")
+            return out(redirect("/login"))
+        if rl_blocked("signup:" + ip, 6, 3600):
+            flash("Too many accounts created from this network. Try again later.", "err")
+            return out(redirect("/login"))
+        base = re.sub(r"[^A-Za-z0-9_.\-]", "", email.split("@")[0])[:20]
+        if len(base) < 3:
+            base = (base + "user")[:20]
+        name = base
+        while same(name.upper(), ADMIN_USER.upper()) or q("SELECT 1 FROM resellers WHERE lower(username)=lower(?)", (name,), one=True):
+            name = "%s%d" % (base[:19], secrets.randbelow(9000) + 1000)
+        try:
+            q("INSERT INTO resellers(username,pw,balance,api_key,created,role,otp_on,gid,email) VALUES(?,?,?,?,?,?,?,?,?)",
+              (name, generate_password_hash(secrets.token_urlsafe(24)), 0, new_api_key(), int(time.time()), "user", 0, sub, email), commit=True)
+        except sqlite3.IntegrityError:
+            flash("Could not create the account. Please try again.", "err")
+            return out(redirect("/login"))
+        rl_hit("signup:" + ip)
+        r = q("SELECT * FROM resellers WHERE username=?", (name,), one=True)
+        try:
+            if tg_admin():
+                bot.send(tg_admin(), "<blockquote>\U0001F195 <b>NEW USER ACCOUNT (Google)</b></blockquote>\n\U0001F464 User: <b>%s</b>\n"
+                                     "\U0001F4E7 %s\n\U0001F310 IP: <code>%s</code>\n\U0001F552 %s" % (esc(name), esc(email), esc(ip), fmt(time.time())),
+                         what="new google user (%s)" % name)
+        except Exception:
+            pass
+    if not r["active"]:
+        flash("Your account is disabled. Please contact admin.", "err")
+        return out(redirect("/login"))
+    if r["role"] == "user":                                  # USER: Google is the login (no device check, no code)
+        session.clear()
+        session["rid"] = r["id"]
+        session["pwh"] = pw_fp(r)
+        return out(with_theme(redirect("/dashboard"), r))
+    if dev_check_on():                                        # upgraded to FULL RESELLER: same device + code rules as the password login
+        d = q("SELECT * FROM devices WHERE reseller_id=? AND dev_id=?", (r["id"], dev), one=True)
+        if d and d["status"] == "denied":
+            return out(blocked_page())
+        if not d or d["status"] != "approved":
+            ask_admin_approval(r, dev)
+            session.clear()
+            session["pre"] = dict(rid=r["id"], dev=dev, ts=int(time.time()))
+            return out(redirect("/login/wait"))
+    return out(with_theme(redirect(next_step(r, dev, fresh=True)), r))
+
+
+# ---- Admin > Access (Bot Make switch, Telegram link, Google)
+@app.route("/admin/access", methods=["GET", "POST"])
+@admin_required
+def admin_access():
+    if request.method == "POST":
+        a = request.form.get("action")
+        if a == "bm_global":
+            set_setting("botmake_on", "1" if request.form.get("on") == "1" else "0")
+            flash("Bot Make is now %s for everybody." % ("ON" if get_setting("botmake_on", "1") != "0" else "OFF"), "ok")
+        elif a == "bm_one":
+            rid = int(num(request.form.get("rid")))
+            off = get_setting("bm_off_%d" % rid, "0") == "1"
+            set_setting("bm_off_%d" % rid, "0" if off else "1")
+            flash("Bot Make turned %s for that reseller." % ("ON" if off else "OFF"), "ok")
+        elif a == "link":
+            set_setting("tg_link_required", "1" if request.form.get("on") else "0")
+            set_setting("tg_bot_link", request.form.get("bot_link", "").strip()[:120])
+            _BOT_UN.clear()
+            flash("Telegram link settings saved.", "ok")
+        elif a == "google_toggle":
+            set_setting("google_on", "1" if request.form.get("on") == "1" else "0")
+            flash("Google sign-up / login is now %s." % ("ON" if request.form.get("on") == "1" else "OFF (hidden everywhere)"), "ok")
+        elif a == "google":
+            cid, sec = request.form.get("cid", "").strip(), request.form.get("secret", "").strip()
+            if cid:
+                set_setting("google_client_id", cid)
+            if sec:
+                set_setting("google_client_secret", sec)
+            set_setting("public_url", request.form.get("public_url", "").strip().rstrip("/")[:120])
+            flash("Google settings saved.", "ok")
+        nxt = request.form.get("next", "")
+        return redirect(nxt if nxt.startswith("/admin/") and not nxt.startswith("//") else "/admin/access")
+    sec = google_conf()[1]
+    rs = q("SELECT id, username FROM resellers WHERE role<>'user' AND deleted=0 ORDER BY username")
+    return render_template("admin_access.html", page="access", bm_on=get_setting("botmake_on", "1") != "0",
+                           rs=[dict(id=x["id"], username=x["username"], off=get_setting("bm_off_%d" % x["id"], "0") == "1") for x in rs],
+                           link_on=get_setting("tg_link_required", "1") != "0", bot_link=get_setting("tg_bot_link", ""),
+                           bot_un=tg_bot_username() if tg_token() else "", has_token=bool(tg_token()),
+                           g_cid=google_conf()[0], g_tail=sec[-4:] if sec else "", g_on=get_setting("google_on", "1") != "0",
+                           public_url=get_setting("public_url", ""), redirect_uri=google_redirect_uri())
+
+
+# ---- premium emoji: a change is sent to the admin's Telegram as a fresh backup a minute later
+_emoji_bk = [None]
+
+
+def schedule_emoji_backup():
+    def go():
+        _emoji_bk[0] = None
+        try:
+            if auto_backup_on():
+                run_auto_backup()
+        except Exception as e:
+            print("[emoji-backup]", e)
+    t = _emoji_bk[0]
+    if t:
+        t.cancel()
+    t = threading.Timer(60, go)
+    t.daemon = True
+    _emoji_bk[0] = t
+    t.start()
+
+
+# ---------------------------------------------------------------- AUTO PRICE PROTECTION (v16.1)
+# When Tahir API or VIP Seller Hub RAISES the price of a plan that is imported here, the selling prices
+# (reseller + user) are raised automatically so they are never below  new provider cost + X %.
+# Prices are only ever raised by this feature, never lowered. Runs in the background + "Check now" button.
+_ap_lock = threading.Lock()
+
+
+def ap_conf():
+    return dict(on=get_setting("auto_price_on", "1") != "0",
+                pr=max(num(get_setting("auto_price_pct_reseller", "5"), 5.0), 0.0),
+                pu=max(num(get_setting("auto_price_pct_user", "5"), 5.0), 0.0),
+                mins=min(max(int(num(get_setting("auto_price_mins", "30"), 30)), 5), 1440))
+
+
+def _ap_costs(src):
+    """{provider plan id (str): fresh cost in INR} from a FRESH catalog, or None if the API is not set up."""
+    if src == "tahir":
+        if not (get_setting("tahir_token") or "").strip():
+            return None
+        cat = load_catalog(refresh=True)
+        return {str(pid): float(pl.get("price") or 0) for pid, (_p, pl) in catalog_plans(cat).items()}
+    if not vsh_token():
+        return None
+    cat = vsh_load_catalog(refresh=True)
+    out = {}
+    for p in cat.get("products", []):
+        for pl in p.get("plans") or []:
+            out[str(pl["plan_id"])] = float(pl.get("price") or 0)
+    return out
+
+
+def auto_price_run(force=False):
+    """One check of both APIs. Returns the status dict (also saved for the admin page)."""
+    if not _ap_lock.acquire(blocking=False):
+        return None
+    try:
+        cf = ap_conf()
+        if not cf["on"] and not force:
+            return None
+        changes, errors, checked = [], [], 0
+        for src, label in (("tahir", "Tahir API"), ("vsh", "VIP Seller Hub")):
+            if not api_enabled(src):
+                continue
+            try:
+                costs = _ap_costs(src)
+            except Exception as e:
+                errors.append("%s: %s" % (label, str(e)[:120]))
+                continue
+            if costs is None:
+                continue
+            for pl in q("SELECT pl.*, p.name AS pname FROM plans pl JOIN products p ON p.id=pl.product_id "
+                        "WHERE pl.prov_src=? AND pl.mode='provider'", (src,)):
+                new = costs.get(str(pl["prov_pid"]))
+                if new is None or new <= 0:
+                    continue
+                checked += 1
+                old = float(pl["cost"] or 0)
+                if abs(new - old) < 0.005:
+                    continue
+                if old <= 0 or new < old:                       # first time seen, or provider got cheaper:
+                    q("UPDATE plans SET cost=? WHERE id=?", (new, pl["id"]), commit=True)   # remember cost only
+                    continue
+                cur_rp = float(pl["price"] or 0)
+                cur_up = float(user_price_of(pl))
+                new_rp = max(cur_rp, round(new * (1 + cf["pr"] / 100.0), 2))
+                new_up = max(cur_up, round(new * (1 + cf["pu"] / 100.0), 2))
+                q("UPDATE plans SET cost=?, price=?, user_price=? WHERE id=?", (new, new_rp, new_up, pl["id"]), commit=True)
+                q("UPDATE custom_prices SET price=? WHERE plan_id=? AND price<?", (new_rp, pl["id"], new_rp), commit=True)
+                changes.append(dict(src=label, product=pl["pname"], plan=pl["name"], old_cost=old, new_cost=new,
+                                    old_rp=cur_rp, new_rp=new_rp, old_up=cur_up, new_up=new_up))
+        st = dict(ts=int(time.time()), checked=checked, changed=len(changes), errors=errors, forced=bool(force))
+        set_setting("auto_price_status", json.dumps(st))
+        if changes:
+            try:
+                old_log = json.loads(get_setting("auto_price_log", "[]") or "[]")
+            except ValueError:
+                old_log = []
+            stamped = [dict(c, ts=st["ts"]) for c in changes]
+            set_setting("auto_price_log", json.dumps((stamped + old_log)[:60]))
+            if tg_admin():
+                lines = ["<blockquote>\U0001F4C8 <b>PRICE AUTO-UPDATED</b></blockquote>",
+                         "Provider raised %d plan price(s). Your selling prices were raised automatically:" % len(changes)]
+                for c in changes[:12]:
+                    lines.append("\n<b>%s</b> - %s (%s)\nProvider: %.2f \u2192 %.2f INR\nReseller: %.2f \u2192 %.2f INR\nUser: %.2f \u2192 %.2f INR"
+                                 % (esc(c["product"]), esc(c["plan"]), esc(c["src"]), c["old_cost"], c["new_cost"],
+                                    c["old_rp"], c["new_rp"], c["old_up"], c["new_up"]))
+                if len(changes) > 12:
+                    lines.append("\n...and %d more (see Admin > Auto Price)" % (len(changes) - 12))
+                try:
+                    bot.send(tg_admin(), "\n".join(lines), what="auto price update")
+                except Exception as e:
+                    print("[auto-price] telegram failed:", e)
+        return st
+    finally:
+        _ap_lock.release()
+
+
+def auto_price_worker():
+    time.sleep(120)
+    while True:
+        try:
+            auto_price_run()
+        except Exception as e:
+            print("[auto-price] error:", e)
+        time.sleep(ap_conf()["mins"] * 60)
+
+
+@app.route("/admin/auto-price", methods=["GET", "POST"])
+@admin_required
+def admin_auto_price():
+    if request.method == "POST":
+        a = request.form.get("action")
+        if a == "save":
+            set_setting("auto_price_on", "1" if request.form.get("on") else "0")
+            set_setting("auto_price_pct_reseller", "%g" % max(num(request.form.get("pr"), 5.0), 0.0))
+            set_setting("auto_price_pct_user", "%g" % max(num(request.form.get("pu"), 5.0), 0.0))
+            set_setting("auto_price_mins", str(min(max(int(num(request.form.get("mins"), 30)), 5), 1440)))
+            flash("Auto price settings saved.", "ok")
+        elif a == "run":
+            st = auto_price_run(force=True)
+            if st is None:
+                flash("A check is already running. Try again in a moment.", "err")
+            elif st["errors"]:
+                flash("Checked %d plan(s), %d raised. Problem: %s" % (st["checked"], st["changed"], "; ".join(st["errors"])), "err")
+            else:
+                flash("Checked %d plan(s). Prices raised: %d." % (st["checked"], st["changed"]), "ok")
+        return redirect("/admin/auto-price")
+    try:
+        st = json.loads(get_setting("auto_price_status", "") or "null")
+    except ValueError:
+        st = None
+    try:
+        log = json.loads(get_setting("auto_price_log", "[]") or "[]")
+    except ValueError:
+        log = []
+    return render_template("admin_auto_price.html", cf=ap_conf(), st=st, log=log, page="autoprice")
 
 
 # ---------------------------------------------------------------- keep-alive (Render never sleeps)
@@ -4117,6 +4572,7 @@ def keep_alive():
 threading.Thread(target=keep_alive, daemon=True, name="keep-alive").start()
 threading.Thread(target=topup_worker, daemon=True, name="topup-worker").start()
 threading.Thread(target=backup_worker, daemon=True, name="auto-backup").start()
+threading.Thread(target=auto_price_worker, daemon=True, name="auto-price").start()
 bot.start()                                   # Telegram bot (login codes, alerts, device approval)
 
 from templates_ui7 import TEMPLATES, ic  # noqa: E402
