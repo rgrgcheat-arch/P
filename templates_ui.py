@@ -224,7 +224,7 @@ T["dashboard.html"] = """{% extends 'rbase.html' %}{% block c %}
 
 T["generate.html"] = """{% extends 'rbase.html' %}{% block c %}<h2>{{ic('key',24)}} Generate Key</h2><div class=mu>Balance: <b style="color:#34d399">{{r.balance|cur}}</b></div>
 {% for p in cat %}<div class=card><h3>{{p.name}}</h3>{% if not p.plans %}<div class=mu>No plans yet</div>{% endif %}
-<div class=tw><table>{% for pl in p.plans %}{% set out = pl.mode=='stock' and pl.stock==0 %}<tr><td>{{pl.name}}<div class=mu>{% if pl.hours %}{{pl.hours}} hour(s){% else %}{{pl.days}} day(s){% endif %}{% if pl.mode=='stock' %} · {{pl.stock}} in stock{% endif %}{% if pl.provider %} · <b>{{pl.provider}}</b>{% endif %}</div></td>
+<div class=tw><table>{% for pl in p.plans %}{% set out = pl.mode=='stock' and pl.stock==0 %}<tr><td>{{pl.name}}<div class=mu>{% if pl.hours %}{{pl.hours}} hour(s){% else %}{{pl.days}} day(s){% endif %}{% if pl.mode=='stock' %} · {{pl.stock}} in stock{% endif %}</div></td>
 <td><b style="color:#34d399">{{pl.price|cur}}</b>{% if pl.custom %} <span class="pill p">special</span>{% endif %}</td>
 <td style="text-align:right"><form method=post onsubmit="return confirm('Purchase {{pl.name}} for {{pl.price|cur}}?')">
 <input type=hidden name=plan_id value="{{pl.id}}"><button class=g {{'disabled' if out}}>{{'Out of stock' if out else 'Purchase Now'}}</button></form></td></tr>{% endfor %}</table></div></div>

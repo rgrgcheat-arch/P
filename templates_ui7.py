@@ -86,7 +86,7 @@ T["admin_products.html"] = T["admin_products.html"].replace(
 
 T["generate.html"] = T["generate.html"].replace(
     "x.name.toUpperCase()+' - '+CU+x.price",
-    "x.name.toUpperCase()+' - '+(x.provider?x.provider+' · ':'')+CU+x.price", 1)
+    "x.name.toUpperCase()+' - '+CU+x.price", 1)
 
 # ---- v16.1: AUTO PRICE (admin menu link + page)
 _old2 = '<a href="/admin/vsh" class="{{\'on\' if page==\'vsh\'}}">VIP Seller Hub</a>'
@@ -179,6 +179,10 @@ T["admin_access.html"] = """{% extends 'abase.html' %}{% block c %}<h2>{{ic('shi
 <input name=bot_link value="{{bot_link}}" placeholder="https://t.me/YourBot" style="width:100%">
 {% if not has_token %}<p class=mu style="color:#f87171">Bot token is not set (Admin &gt; Telegram). Until then nobody is asked to link.</p>{% endif %}
 <button class=g style="margin-top:12px">{{ic('check')}} Save</button></form></div>
+<div class=card><h3>Create New Account</h3>
+<form method=post style="margin-bottom:4px"><input type=hidden name=action value=signup_toggle><input type=hidden name=on value="{{'0' if su_on else '1'}}">
+<button class="{{'g' if su_on else 'r'}}">{{'Turn Create Account OFF (hide it everywhere)' if su_on else 'Turn Create Account ON'}}</button> <span class="pill {{'a' if su_on else 'e'}}">{{'ON' if su_on else 'OFF'}}</span></form>
+<p class=mu>Login page order: Login, then Create New Account, then Continue with Google. Each switch works on its own: ON = shown, OFF = hidden.</p></div>
 <div class=card><h3>Google sign-up / login</h3>
 <form method=post style="margin-bottom:12px"><input type=hidden name=action value=google_toggle><input type=hidden name=on value="{{'0' if g_on else '1'}}">
 <button class="{{'g' if g_on else 'r'}}">{{'Turn Google OFF (hide it everywhere)' if g_on else 'Turn Google ON'}}</button> <span class="pill {{'a' if g_on else 'e'}}">{{'ON' if g_on else 'OFF'}}</span></form>
@@ -205,5 +209,29 @@ assert _o in T["admin_music.html"]
 T["admin_music.html"] = T["admin_music.html"].replace(_o, """<tr><td style="white-space:nowrap"><b>{{loop.index}}</b>
 <form method=post style="display:inline"><input type=hidden name=action value=move><input type=hidden name=id value="{{m.id}}"><input type=hidden name=dir value=up><button class=o {{'disabled' if loop.first}} aria-label="Move up">&#9650;</button></form>
 <form method=post style="display:inline"><input type=hidden name=action value=move><input type=hidden name=id value="{{m.id}}"><input type=hidden name=dir value=down><button class=o {{'disabled' if loop.last}} aria-label="Move down">&#9660;</button></form></td><td>{{m.title}}</td>""", 1)
+
+# ---- v17.2: Music upload fix. The progress-bar markup was missing, so the upload script crashed and the form never sent.
+_o = "<button>Add Song</button></form>"
+assert _o in T["admin_music.html"]
+T["admin_music.html"] = T["admin_music.html"].replace(_o, _o + """<div id=mp style="display:none;margin-top:10px"><div style="height:10px;border-radius:8px;background:rgba(255,255,255,.1);overflow:hidden"><div id=mb style="height:100%;width:0;background:linear-gradient(90deg,var(--ac),var(--ac2))"></div></div><div class=mu id=mt style="margin-top:6px">Uploading 0%</div></div>""", 1)
+_o = "x.onload=function(){location.href='/admin/music'};"
+assert _o in T["admin_music.html"]
+T["admin_music.html"] = T["admin_music.html"].replace(_o,
+    "x.onload=function(){if(x.status>=200&&x.status<400){location.href='/admin/music'}else{tx.textContent='Upload failed (error '+x.status+'). The file may be too big for the server - try a smaller file or a direct URL.';mf.querySelectorAll('button').forEach(function(b){b.disabled=false})}};", 1)
+
+# ---- v17.4: BULK PRICE (all reseller / user prices by %)
+_o = '<a href="/admin/auto-price" class="{{\'on\' if page==\'autoprice\'}}">Auto Price</a>'
+assert _o in T["abase.html"]
+T["abase.html"] = T["abase.html"].replace(_o, _o + '<a href="/admin/bulk-price" class="{{\'on\' if page==\'bulkprice\'}}">Bulk Price %</a>', 1)
+T["admin_bulk_price.html"] = """{% extends 'abase.html' %}{% block c %}<h2>{{ic('wallet',24)}} Bulk Price %</h2>
+<div class=card><h3>Change ALL prices at once</h3>
+<p class=mu>Applies to all <b>{{cnt}}</b> plans of every product. Use a minus sign (for example -10) to lower prices.</p>
+<form method=post onsubmit="return confirm('Change prices of ALL plans now?')">
+<p class=mu>What to change</p>
+<select name=target style="width:100%"><option value=both>Reseller price + User price</option><option value=reseller>Only Reseller price</option><option value=user>Only User price</option></select>
+<p class=mu style="margin-top:10px">Percentage (%)</p><input name=pct type=number step=any min=-90 max=1000 placeholder="e.g. 10" required style="width:160px">
+<label class=mu style="display:flex;gap:8px;align-items:center;margin-top:10px"><input type=checkbox name=custom value=1 style="width:auto"> Also change resellers' custom prices (only when Reseller price is selected)</label>
+<br><button class=g style="margin-top:12px">{{ic('check')}} Apply to all</button></form></div>{% endblock %}"""
+
 
 TEMPLATES = T

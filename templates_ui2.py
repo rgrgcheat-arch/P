@@ -158,17 +158,23 @@ const ss=sessionStorage,frame=document.getElementById('musicframe');let i=0,exte
 if(ss.mu){const k=L.findIndex(x=>x.url===ss.mu);i=k>=0?k:0}else{i=+localStorage.mi||0;if(i>=L.length)i=0}
 function save(){try{ss.mu=L[i].url;ss.mt=au.currentTime||0;if(!au.paused)ss.ts=Date.now()}catch(e){}}
 function stopExternal(){frame.src='';frame.style.display='none';external=false;pp.innerHTML=PLAY}
-function load(n,autoplay){i=(n+L.length)%L.length;const item=L[i];ttl.textContent=item.title||'Music';ttl.title=item.title||'Music';localStorage.mi=i;stopExternal();au.pause();au.removeAttribute('src');au.style.display='';
+function load(n,autoplay,seek){i=(n+L.length)%L.length;const item=L[i];ttl.textContent=item.title||'Music';ttl.title=item.title||'Music';localStorage.mi=i;stopExternal();au.pause();au.removeAttribute('src');au.style.display='';
  if(item.kind==='youtube'||item.kind==='spotify'||item.embed_url){external=true;au.style.display='none';pp.style.display='';pp.innerHTML=PLAY;pp.onclick=()=>startExternal();if(autoplay)startExternal();return}
- external=false;au.src=item.url;pp.onclick=()=>au.paused?playAudio():au.pause();if(autoplay)playAudio();}
+ external=false;au.src=item.url;ss.mu=item.url;if(seek>0)au.addEventListener('loadedmetadata',()=>{try{au.currentTime=seek}catch(e){}},{once:true});pp.onclick=()=>au.paused?playAudio():(au.pause(),ss.mp='0');if(autoplay)playAudio();}
 function startExternal(){const item=L[i];if(!item||!item.embed_url)return;frame.style.display='block';frame.style.width='min(320px,42vw)';frame.style.height=item.kind==='youtube'?'180px':'152px';frame.allow='autoplay; encrypted-media; picture-in-picture';let src=item.embed_url;
  if(item.kind==='youtube')src+='?autoplay=1&playsinline=1&controls=1&rel=0';else src+='?utm_source=generator&autoplay=1';
  frame.src=src;pp.innerHTML=PAUSE;ss.mp='1';}
 function playAudio(){return au.play().catch(()=>{pp.innerHTML=PLAY})}
-au.onplay=()=>{pp.innerHTML=PAUSE;ss.mp=1};au.onpause=()=>{pp.innerHTML=PLAY;if(!au.ended)ss.mp='0'};au.ontimeupdate=save;
-pp.onclick=()=>external?(frame.src?stopExternal():startExternal()):(au.paused?playAudio():au.pause());
+au.onplay=()=>{pp.innerHTML=PAUSE;ss.mp=1};au.onpause=()=>{pp.innerHTML=PLAY};au.ontimeupdate=save;window.addEventListener('pagehide',save);
+pp.onclick=()=>external?(frame.src?(stopExternal(),ss.mp='0'):startExternal()):(au.paused?playAudio():(au.pause(),ss.mp='0'));
 nx.onclick=()=>load(i+1,true);pv.onclick=()=>load(i-1,true);au.onended=()=>load(i+1,true);
-load(i,false);
+const want=ss.mp!=='0';let resume=ss.mu?(+ss.mt||0):0;
+if(resume>0&&ss.ts&&want){const gap=(Date.now()-(+ss.ts))/1000;if(gap>0&&gap<8)resume+=gap}
+load(i,want,resume);
+if(want&&!external){const evs=['pointerdown','touchstart','keydown','click'];
+const off=()=>evs.forEach(ev=>document.removeEventListener(ev,kick,true));
+const kick=e=>{if(e&&e.target&&e.target.closest&&e.target.closest('#pl'))return;if(ss.mp==='0'||external||!au.paused){off();return}playAudio().then(()=>{if(!au.paused)off()})};
+evs.forEach(ev=>document.addEventListener(ev,kick,{capture:true,passive:true}))}
 })();
 </script></body></html>"""
 
@@ -303,7 +309,7 @@ T["admin_broadcast.html"] = r"""{% extends 'abase.html' %}{% block c %}<h2>{{ic(
 # ================================================================ v6: login verification, devices, security, telegram
 LGHEAD = HEAD + """{{BRAND}} - {{title}}</title><style>""" + CSS2 + """</style><script>""" + THEME_JS + """initTheme('');</script></head><body>
 <div class="lg"><div class="box">"""
-LGFOOT = """<div class="copy">&copy; {{year}} {{BRAND}}</div></div></div>"""
+LGFOOT = """<div class="copy">&copy; {{year}} {{BRAND}}</div></div></div><script>try{["mp","mt","mu","ts"].forEach(function(k){sessionStorage.removeItem(k)})}catch(e){}</script>"""
 
 T["login_wait.html"] = LGHEAD + """<div class="logo-t">{{ic('hourglass',30)}}</div><h1>Approval needed</h1><div class="dv"><i></i><u></u><i></i></div>
 <div class="tag">{{ic('shield2',18)}} New device</div>""" + FLASH + """
@@ -632,11 +638,11 @@ T["api.html"] = r"""{% extends 'rbase.html' %}{% block c %}<style>""" + API_CSS 
 <p class=mu>Wrong / missing token &rarr; HTTP 401 and <code>"connected": false</code>.</p></div>
 
 <div class=card><h3><span class=mth>GET</span>1. Connect</h3><p>Use this when the reseller presses <b>Connect</b> in the bot.</p>
-""" + _cb('GET {{base}}/api/v1/connect') + _cb('{"success": true, "connected": true, "message": "Connect successful",\n "username": "RPSHIVA", "balance": 250.0, "currency": "INR", "server": "{{base}}"}') + r"""
+""" + _cb('GET {{base}}/api/v1/connect') + _cb('{"success": true, "connected": true, "message": "Connect successful",\n "username": "{{BRAND}}", "balance": 250.0, "currency": "INR", "server": "{{base}}"}') + r"""
 <p class=mu>If the token is wrong: <code>{"success": false, "connected": false, "error": "INVALID_API_KEY", "message": "Not connected: ..."}</code></p></div>
 
 <div class=card><h3><span class=mth>GET</span>2. Check Balance</h3>
-""" + _cb('GET {{base}}/api/v1/balance\n\n{"success": true, "username": "RPSHIVA", "balance": 250.0, "currency": "INR"}') + r"""</div>
+""" + _cb('GET {{base}}/api/v1/balance\n\n{"success": true, "username": "{{BRAND}}", "balance": 250.0, "currency": "INR"}') + r"""</div>
 
 <div class=card><h3><span class=mth>GET</span>3. Products, Plans &amp; Prices</h3>
 <p>Prices are <b>your</b> prices (custom price if admin set one). All amounts are INR.</p>

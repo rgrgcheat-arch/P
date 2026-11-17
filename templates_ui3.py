@@ -84,12 +84,12 @@ sub("rbase.html", """<a href="/bot-make" class="{{'on' if page=='botmake'}}">{{i
     """{% if r.role!='user' %}<a href="/bot-make" class="{{'on' if page=='botmake'}}">{{ic('bot')}} Bot Make</a>
 <a href="/security" class="{{'on' if page=='security'}}">{{ic('shield2')}} Security</a>{% endif %}""")
 sub("rbase.html", """<a href="/api-docs" class="{{'on' if page=='api'}}">{{ic('code')}} API &amp; Docs</a>""",
-    """{% if r.role!='user' %}<a href="/api-docs" class="{{'on' if page=='api'}}">{{ic('code')}} API &amp; Docs</a>{% endif %}""")
+    """<a href="/api-docs" class="{{'on' if page=='api'}}">{{ic('code')}} API &amp; Docs</a>""")
 sub("dashboard.html", "<span class=\"tile\">{{ic('crown',28)}}</span>", "<span class=\"tile\">{{brand_mark('crown',28)}}</span>")
 sub("settings.html", "(Even with the password, a new device still needs admin approval.)",
     "{% if r.role!='user' %}(Even with the password, a new device still needs admin approval.){% endif %}")
 sub("settings.html", """<label class=mu style="display:flex;gap:8px;align-items:center"><input type=checkbox name=newkey value=1 style="width:auto"> Also generate a new API key (old API key stops working)</label>""",
-    """{% if r.role!='user' %}<label class=mu style="display:flex;gap:8px;align-items:center"><input type=checkbox name=newkey value=1 style="width:auto"> Also generate a new API key (old API key stops working)</label>{% endif %}""")
+    """<label class=mu style="display:flex;gap:8px;align-items:center"><input type=checkbox name=newkey value=1 style="width:auto"> Also generate a new API key (old API key stops working)</label>""")
 
 # ================================================================ login + sign-up pages
 AUTH_CSS = r"""<style>
